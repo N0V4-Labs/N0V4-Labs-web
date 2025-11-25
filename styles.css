@@ -883,6 +883,14 @@ code {
     color: var(--text-color);
 }
 
+.article-code-file.mark-section::before {
+    position: absolute;
+    left: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    margin-right: 0;
+}
+
 .article-code-file.mark-section::after {
     content: '';
     position: absolute;
