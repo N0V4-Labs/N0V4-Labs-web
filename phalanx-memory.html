@@ -65,7 +65,7 @@
 
           <h3>Numbers first</h3>
           <p>
-            Instead of "we'll just keep it under a couple of gigabytes," PHALANX writes down an actual budget:
+            We write down an actual budget:
           </p>
 
           <div class="code-block">
@@ -97,7 +97,7 @@ Total runtime memory budget:          ~2048 MB</code></pre>
 
           <h3>A small surface: the allocator interface</h3>
           <p>
-            Just as PHALANX does not let gameplay code talk to Flecs directly, it does not let most code talk
+            Just as we do not let gameplay code talk to Flecs directly, we do not let most code talk
             to the raw STL allocator either.
           </p>
           <p>
@@ -203,7 +203,7 @@ T* Allocate(IAllocator&amp; alloc) {
             state live for seconds or minutes, but they share a crucial property: they are all the same size.
           </p>
           <p>
-            For that pattern, PHALANX uses pool allocators.
+            For that pattern, we use pool allocators.
           </p>
           <p>
             Conceptually, each pool is:
@@ -287,7 +287,7 @@ projectile_pool.Destroy(p);</pre>
             <em>something</em> is happening, but you cannot tell whether it is progress.
           </p>
           <p>
-            PHALANX wires allocators into Tracy via <code>tracy_memory.h</code>. The contract is:
+            We wire allocators into Tracy via <code>tracy_memory.h</code>. The contract is:
           </p>
           <ul>
             <li>Allocators call <code>PHALNX_TRACY_ALLOC(ptr, size, pool_name)</code> when they hand out memory.</li>
