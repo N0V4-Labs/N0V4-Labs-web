@@ -34,30 +34,46 @@
         </div>
         <div class="content">
           <p>
-            The entity system in PHALANX exists for a fairly ordinary reason: recent hardware is fast, but not
-            fast enough to forgive arbitrary decisions about data layout. If you want to update tens of thousands
-            of small pieces of state at 144&nbsp;Hz, you do not get to scatter them around the heap in whatever
-            shape feels convenient that day. You need a plan.
+            Here is something that happens very predictably once you try to ship a 144&nbsp;FPS game with a lot of
+            moving parts:
+          </p>
+          <p>
+            At first, the entity model is whatever is convenient. A few classes here, some pointers there, a map of
+            IDs to objects, maybe some shared pointers for safety. It works in small tests. Profiling shows a bit
+            of overhead, but nothing alarming.
+          </p>
+          <p>
+            Then you turn on a real match: mechs, minions, projectiles, debris, particles, vision probes, and all
+            the simulation glue that ties them together. Suddenly, "convenient" data layout becomes a frame-time
+            tax. The cache miss pattern is inscrutable. Adding one more effect system or debug overlay makes the
+            frame stutter in ways that are hard to reproduce.
+          </p>
+          <p>
+            PHALANX's entity system exists so we do not have to find out how bad that can get.
+          </p>
+          <p>
+            If you want to update tens of thousands of small pieces of state at 144&nbsp;Hz, you do not get to scatter
+            them around the heap in whatever shape feels comfortable that day. You need a plan.
           </p>
           <p>
             In a typical PHALANX match the number of player-controlled mechs is small, but the total entity count
             is not. Minions, projectiles, debris, particles, temporary vision probes, and assorted bits of
             simulation state all coexist. Peaks in the neighborhood of <strong>90,000 live entities</strong> are not
-            exotic corner cases; they are a design target. At the same time the total frame budget is
-            6.94&nbsp;ms if you want to hit 144&nbsp;FPS.
+            rare spikes; they are a design target. At the same time the total frame budget is 6.94&nbsp;ms if you want
+            to hit 144&nbsp;FPS.
           </p>
           <p>
             This post digs into how the entity system is structured on top of <code>Flecs 4.x</code>, why it is wrapped
             in <code>phalnx::ecs::EntityManager</code> rather than exposed directly, and what that buys in terms of
-            performance and failure modes. The pattern is similar to the spinlock examples: write down the rules
+            performance and failure modes. The pattern is the same one we use elsewhere: write down the rules
             first, then write the code that has a chance of obeying them.
           </p>
 
           <h3>Numbers first</h3>
           <p>
             It is easy to say “we want something fast and scalable” and then stop there. That kind of requirement
-            is hard to falsify. Instead, for PHALANX the ECS layer has a small table of operation-level targets.
-            If we drift far outside of these, something is wrong.
+            is hard to falsify. Instead, for PHALANX the ECS layer writes down a tiny table of operation-level
+            targets. If we drift far outside of these, something is wrong.
           </p>
 
           <figure>
@@ -102,10 +118,13 @@
 
           <p>
             These numbers come directly from the header comments in <code>entity_manager.h</code>. They are not
-            promises about any possible hardware; they are expectations on the machines we care about. The point
-            is that when we discuss a change we are not arguing about whether something “feels fast enough” but
-            about whether it keeps <code>AddComponent</code> under roughly half a microsecond and
-            <code>GetComponentMut</code> under a couple of dozen nanoseconds.
+            promises about any possible hardware; they are expectations on the machines we care about.
+          </p>
+          <p>
+            The point is that when we discuss a change we are not arguing about whether something “feels fast
+            enough.” We are arguing about whether it keeps <code>AddComponent</code> under roughly half a microsecond
+            and <code>GetComponentMut</code> under a couple of dozen nanoseconds. It also means that profiling “feels”
+            less like vibes and more like regression detection.
           </p>
 
           <h3>Flecs under the hood, EntityManager in front</h3>
@@ -182,8 +201,18 @@ private:
             All of the gameplay-facing ECS operations go through this class. Internally it constructs
             <code>flecs::entity</code> handles as needed and calls <code>set</code>, <code>add</code>, <code>remove</code>, <code>destruct</code>, and so on.
             Externally the rest of the codebase only needs to know about <code>EntityID</code> and these methods.
-            That gives us a place to attach documentation, to route allocations through custom allocators over
-            time, to integrate profiling, and to adjust threading behavior without rewriting every system.
+          </p>
+          <p>
+            That gives us a few things:
+          </p>
+          <ul>
+            <li>A single place to attach documentation, invariants, and best practices.</li>
+            <li>A seam where we can route allocations through custom allocators over time.</li>
+            <li>A hook for Tracy profiling (<code>ENTITY_MANAGER_ZONE_SCOPED</code>) that does not pollute gameplay code.</li>
+            <li>A way to adjust threading behavior or even swap out Flecs without rewriting every system.</li>
+          </ul>
+          <p>
+            The wrapper is not there to make Flecs safer. It is there to make the way we use Flecs explicit and reviewable.
           </p>
 
           <h3>Components as plain old data</h3>
@@ -209,19 +238,27 @@ struct StructureTag {};</code></pre>
 
           <p>
             In the actual header these components have sensible default initializers, but the shape is exactly
-            this. The header file <code>components.h</code> asserts that these are trivially copyable and that their
-            sizes are exactly what we expect: <code>Position</code> and <code>Velocity</code> are 12&nbsp;bytes each,
+            this.
+          </p>
+          <p>
+            The header file <code>components.h</code> asserts that these are <code>std::is_trivially_copyable_v&lt;T&gt;</code>
+            and that their sizes are exactly what we expect: <code>Position</code> and <code>Velocity</code> are 12&nbsp;bytes each,
             <code>Rotation</code> is 16, <code>Health</code> and <code>Energy</code> are 8, <code>Team</code> is 4, and the tag types are
             empty. There are also <code>static_assert</code> checks that the tag components are
-            <code>std::is_empty_v&lt;T&gt;</code>. These constraints are not deep; they are there to prevent accidental
-            padding and to keep common archetypes within predictable cache-line budgets.
+            <code>std::is_empty_v&lt;T&gt;</code>.
+          </p>
+          <p>
+            These constraints are not deep. They exist to prevent accidental
+            padding and to keep common archetypes within predictable cache-line budgets. If we ever change a
+            component in a way that bloats its size, the build fails loudly instead of quietly making iteration slower.
           </p>
           <p>
             On the side, there is a <code>ComponentRegistry</code> that records metadata for each type:
             a human-readable name, the size, the alignment, and whether it is a tag. This registry is a simple
             <code>std::unordered_map&lt;std::type_index, ComponentMetadata&gt;</code> and is used for logging, serialization,
             and tooling. The runtime ECS code does not depend on it; <code>EntityManager</code> does not know the
-            registry exists, by design.
+            registry exists, by design. That separation is intentional: the hot path does not pay for reflection,
+            and the editor/debug path does not have to tunnel through the ECS wrapper to get type information.
           </p>
 
           <h3>Entity IDs and the habit of checking liveness</h3>
@@ -231,7 +268,7 @@ struct StructureTag {};</code></pre>
             changes. That solves the basic “stale ID accidentally refers to a new object” problem.
           </p>
           <p>
-            The liveness check looks like this:
+            The common liveness pattern looks like this:
           </p>
 
           <div class="code-block">
@@ -245,8 +282,12 @@ struct StructureTag {};</code></pre>
           <p>
             Internally <code>IsAlive</code> constructs a <code>flecs::entity</code> from the ID and calls
             <code>entity.is_alive()</code>. In debug builds there is also a <code>VALIDATE_ENTITY_ID</code> macro that
-            prints a warning if you pass zero as an <code>EntityID</code>. The implementation is short and the cost is
-            on the order of a few nanoseconds: a lookup followed by a bitset check in Flecs.
+            prints a warning if you pass zero as an <code>EntityID</code>.
+          </p>
+          <p>
+            The implementation is short and the cost is
+            on the order of a few nanoseconds: a lookup followed by a bitset check in Flecs. That is cheap enough
+            that you can afford to be conservative.
           </p>
           <p>
             The pattern we want here is similar to the one in the spinlock example where you use <code>READ_ONCE</code>
@@ -268,8 +309,8 @@ struct StructureTag {};</code></pre>
           </div>
 
           <p>
-            In terms of cost, the liveness check is cheap enough that this pattern is preferable to any scheme
-            that assumes entity IDs stay valid forever and then tries to debug the consequences later.
+            The important bit is not that <code>IsAlive</code> is novel. It is that we treat "always guard delayed uses
+            with <code>IsAlive</code>" as a rule, not as a suggestion. That consistency is what keeps the failure modes boring.
           </p>
 
           <h3>Structural changes and batches</h3>
@@ -326,11 +367,12 @@ for (int i = 0; i &lt; 1000; ++i) {
           </div>
 
           <p>
-            From the code’s point of view this gives two properties. First, it provides an all-or-nothing
-            boundary: either all of these structural changes become visible together or none of them do. Second,
-            it reduces the number of places where pointer invalidation can occur. Pointers remain valid within
-            the batch scope; they are invalidated when the batch flushes.
+            From the code’s point of view this gives two properties:
           </p>
+          <ul>
+            <li>It provides an all-or-nothing boundary: either all of these structural changes become visible together or none of them do.</li>
+            <li>It reduces the number of places where pointer invalidation can occur. Pointers remain valid within the batch scope; they are invalidated when the batch flushes.</li>
+          </ul>
           <p>
             The batch class also has an <code>Apply</code> method that explicitly calls <code>defer_end</code> and then
             <code>defer_begin</code> again. This lets you flush mid-batch for debugging or profiling and then keep
@@ -338,10 +380,15 @@ for (int i = 0; i &lt; 1000; ++i) {
           </p>
           <p>
             The important detail is that batching is there primarily for transaction-like semantics and for
-            controlling when pointers go stale. You still pay for structural changes when the batch flushes, but
-            the mental model should be “group these changes and make them appear all at once,” not “structural
-            changes are free now.” In practice the expectation is that you stay within the per-operation budgets
-            from Table&nbsp;1 while getting better behavior and, for large bulk spawns, a noticeable speedup.
+            controlling when pointers go stale. You still pay for structural changes when the batch flushes. The
+            mental model should be “group these changes and make them appear all at once,” not “structural
+            changes are free now.”
+          </p>
+          <p>
+            In practice, staying within the per-operation budgets
+            from Table&nbsp;1 while using batches for bulk spawns or mass cleanup gives you both better behavior and,
+            for large operations, a noticeable speedup. The code is also easier to reason about: the places where
+            pointers become invalid are spelled out by scope.
           </p>
 
           <h3>Queries as the iteration primitive</h3>
@@ -370,7 +417,10 @@ manager.QueryMut&lt;Position, const Velocity&gt;(
           <p>
             Under the hood both forms construct a Flecs query and call <code>.each</code> with a lambda that
             receives a <code>flecs::entity</code> and component references. The wrapper converts
-            <code>entity.id()</code> to an <code>EntityID</code> and forwards the component references. The const vs
+            <code>entity.id()</code> to an <code>EntityID</code> and forwards the component references.
+          </p>
+          <p>
+            The const vs
             mutable distinction is enforced at the type level, so if you pick <code>Query</code> you cannot
             accidentally mutate components. Both methods also wrap the iteration in a Tracy profiler zone via
             <code>ENTITY_MANAGER_ZONE_SCOPED</code>, so query cost shows up cleanly in profiles.
@@ -380,6 +430,11 @@ manager.QueryMut&lt;Position, const Velocity&gt;(
             queries, which keeps a 20k-entity pass under roughly one millisecond. Archetype storage gives the
             usual benefit: entities with the same component sets are adjacent in memory, and the queries walk
             that memory linearly.
+          </p>
+          <p>
+            From a design point of view, this is also the point where we stop pretending entities are objects.
+            Systems express "all entities with (Position, Velocity)" as a single pass, and the ECS layer makes that
+            pattern cheap enough to use everywhere.
           </p>
 
           <h3>Threading: configuring Flecs, not replacing it</h3>
@@ -405,11 +460,23 @@ world.system&lt;Position, const Velocity&gt;("ProjectilePhysics")
           </div>
 
           <p>
-            The recommended pattern is straightforward: configure the thread count once at initialization, register
-            systems on the main thread before the main loop begins, and then let Flecs handle slicing entity sets
-            across worker threads for systems marked <code>.multi_threaded()</code>. Structural changes that occur
-            inside those systems are automatically deferred to per-thread stages and merged at synchronization
-            points when the world progresses.
+            The recommended pattern is straightforward:
+          </p>
+          <ul>
+            <li>Configure the thread count once at initialization, before the main loop.</li>
+            <li>Register systems on the main thread before the first call to <code>world.progress()</code>.</li>
+            <li>Mark systems that can safely run in parallel with <code>.multi_threaded()</code>.</li>
+            <li>Let Flecs handle slicing entity sets across worker threads for those systems.</li>
+          </ul>
+          <p>
+            Structural changes that occur inside multi-threaded systems are automatically deferred to per-thread
+            stages and merged at synchronization points when the world progresses. Reads of components are safe
+            across threads during that window; writes are safe as long as each entity is only processed by one
+            thread (which is exactly what Flecs arranges for these systems).
+          </p>
+          <p>
+            The wrapper does not try to replace Flecs' threading model. It just gives us a predictable place to
+            turn the dial and a documented set of constraints around it.
           </p>
 
           <h3>Error handling: null pointers and expected errors</h3>
@@ -424,11 +491,13 @@ world.system&lt;Position, const Velocity&gt;("ProjectilePhysics")
           </div>
 
           <p>
+            This is the cheap, hot path. It is good enough for most gameplay systems: either the component is
+            there, or it is not, and "missing" is a normal condition.
+          </p>
+          <p>
             For situations where it matters why a lookup failed there are the <code>TryGetComponent</code> and
             <code>TryGetComponentMut</code> variants, which wrap the pointer in <code>std::expected</code> and tag
-            failures with <code>ECSError::EntityNotFound</code> or <code>ECSError::ComponentMissing</code>. This is
-            mechanically just a thin layer over the same logic, but it gives code that cares about diagnostics a
-            clearer path.
+            failures with <code>ECSError::EntityNotFound</code> or <code>ECSError::ComponentMissing</code>.
           </p>
 
           <div class="code-block">
@@ -450,9 +519,14 @@ if (!result) {
           </div>
 
           <p>
-            Most code paths do not need this level of detail and use the pointer-returning forms. When you are
-            implementing something like a replay system, though, it is useful to know whether you are looking at
-            a dead entity or at an entity that never had the component in the first place.
+            Mechanically this is just a thin layer over the same logic, but it gives code that cares about
+            diagnostics a clearer path. A replay system can distinguish "this entity died" from "this entity
+            never had that component." A debugging tool can log more precise messages instead of guessing.
+          </p>
+          <p>
+            Most code paths do not need this level of detail and use the pointer-returning forms. The important
+            bit is that the structured version exists and is spelled out in the API, not buried under
+            <code>dynamic_cast</code> or exception handling.
           </p>
 
           <h3>Oh yeah: here is a T1 turret render</h3>
@@ -463,17 +537,21 @@ if (!result) {
           </p>
           <p>
             When the entity system behaves, you can have scenes full of objects like this—tracking targets,
-            taking damage, respawning—without the simulation becoming the bottleneck.
+            taking damage, respawning—without the simulation becoming the bottleneck. The ECS layer is there
+            partly so we can afford to have many of these doing useful work at once, without guessing where the
+            time went or why a pointer suddenly went stale.
+          </p>
+          <p>
+            The rules are simple: keep components as POD, guard delayed uses with <code>IsAlive</code>, respect
+            pointer invalidation on structural changes, and run everything through a thin wrapper that is honest
+            about performance and failure modes. The rest—90k entities, 144&nbsp;FPS, and a field of active
+            turrets—is just what happens when those rules are obeyed consistently.
           </p>
 
           <figure>
             <img src="t1-outer-tower-v2-final-Rendered.png"
                  alt="Render of the Tier 1 outer turret design for PHALANX"
                  style="max-width: 100%; height: auto; border-radius: 4px;">
-            <figcaption>
-              Tier&nbsp;1 outer turret in PHALANX. The ECS layer exists partly so that we can afford to
-              have many of these doing useful work at once.
-            </figcaption>
           </figure>
         </div>
       </article>
