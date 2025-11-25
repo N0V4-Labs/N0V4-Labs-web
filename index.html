@@ -35,14 +35,19 @@
 
             <section class="featured-posts">
                 <div class="posts-grid">
-                    <article class="post-card">
-                        <div class="post-date">November 25, 2025</div>
-                        <h3><a href="phalanx-ecs.html" style="color: inherit; text-decoration: none;">Inside PHALANX's ECS: Wrapping Flecs for 90k Entities</a></h3>
-                        <p>
-                            How we wrapped Flecs 4.x with the EntityManager abstraction, StructuralChangeBatch for 
-                            deferred operations, and type-safe queries to manage 90,000 entities in our tower defense game.
-                        </p>
-                    </article>
+                 <article class="post-card">
+  <div class="post-date">November 25, 2025</div>
+  <h3>
+    <a href="phalanx-ecs.html" style="color: inherit; text-decoration: none;">
+      Inside PHALANX’s ECS: Wrapping Flecs for 90k Entities
+    </a>
+  </h3>
+  <p>
+    How PHALANX’s entity system wraps Flecs with an EntityManager layer, keeps
+    components as POD data, and uses explicit liveness checks and batched
+    structural changes to handle tens of thousands of entities per frame.
+  </p>
+</article>
                 </div>
             </section>
         </div>
