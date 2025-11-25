@@ -77,7 +77,7 @@
                 <td>&gt; 200&nbsp;ns</td>
               </tr>
               <tr>
-                <td><code>GetComponentMut</code> (in‑place write)</td>
+                <td><code>GetComponentMut</code> (in-place write)</td>
                 <td>&lt; 25&nbsp;ns</td>
                 <td>&gt; 50&nbsp;ns</td>
               </tr>
@@ -182,8 +182,8 @@ private:
             All of the gameplay-facing ECS operations go through this class. Internally it constructs
             <code>flecs::entity</code> handles as needed and calls <code>set</code>, <code>add</code>, <code>remove</code>, <code>destruct</code>, and so on.
             Externally the rest of the codebase only needs to know about <code>EntityID</code> and these methods.
-            That gives us a place to attach documentation, to route allocations through custom allocators, and
-            to adjust threading behavior without rewriting every system.
+            That gives us a place to attach documentation, to route allocations through custom allocators over
+            time, to integrate profiling, and to adjust threading behavior without rewriting every system.
           </p>
 
           <h3>Components as plain old data</h3>
@@ -208,17 +208,20 @@ struct StructureTag {};</code></pre>
           </div>
 
           <p>
-            The header file <code>components.h</code> asserts that these are trivially copyable and that their sizes
-            are exactly what we expect: <code>Position</code> and <code>Velocity</code> are 12&nbsp;bytes each,
+            In the actual header these components have sensible default initializers, but the shape is exactly
+            this. The header file <code>components.h</code> asserts that these are trivially copyable and that their
+            sizes are exactly what we expect: <code>Position</code> and <code>Velocity</code> are 12&nbsp;bytes each,
             <code>Rotation</code> is 16, <code>Health</code> and <code>Energy</code> are 8, <code>Team</code> is 4, and the tag types are
-            empty. These constraints are not deep; they are there to prevent accidental padding and to keep
-            common archetypes within predictable cache-line budgets.
+            empty. There are also <code>static_assert</code> checks that the tag components are
+            <code>std::is_empty_v&lt;T&gt;</code>. These constraints are not deep; they are there to prevent accidental
+            padding and to keep common archetypes within predictable cache-line budgets.
           </p>
           <p>
             On the side, there is a <code>ComponentRegistry</code> that records metadata for each type:
             a human-readable name, the size, the alignment, and whether it is a tag. This registry is a simple
             <code>std::unordered_map&lt;std::type_index, ComponentMetadata&gt;</code> and is used for logging, serialization,
-            and tooling. The runtime ECS code does not depend on it.
+            and tooling. The runtime ECS code does not depend on it; <code>EntityManager</code> does not know the
+            registry exists, by design.
           </p>
 
           <h3>Entity IDs and the habit of checking liveness</h3>
@@ -241,9 +244,9 @@ struct StructureTag {};</code></pre>
 
           <p>
             Internally <code>IsAlive</code> constructs a <code>flecs::entity</code> from the ID and calls
-            <code>entity.is_alive()</code>. In debug builds there is also a macro that prints a warning if you pass
-            zero as an <code>EntityID</code>. The implementation is short and the cost is on the order of a few
-            nanoseconds: a lookup followed by a bitset check in Flecs.
+            <code>entity.is_alive()</code>. In debug builds there is also a <code>VALIDATE_ENTITY_ID</code> macro that
+            prints a warning if you pass zero as an <code>EntityID</code>. The implementation is short and the cost is
+            on the order of a few nanoseconds: a lookup followed by a bitset check in Flecs.
           </p>
           <p>
             The pattern we want here is similar to the one in the spinlock example where you use <code>READ_ONCE</code>
@@ -333,6 +336,13 @@ for (int i = 0; i &lt; 1000; ++i) {
             <code>defer_begin</code> again. This lets you flush mid-batch for debugging or profiling and then keep
             queuing more operations within the same scope.
           </p>
+          <p>
+            The important detail is that batching is there primarily for transaction-like semantics and for
+            controlling when pointers go stale. You still pay for structural changes when the batch flushes, but
+            the mental model should be “group these changes and make them appear all at once,” not “structural
+            changes are free now.” In practice the expectation is that you stay within the per-operation budgets
+            from Table&nbsp;1 while getting better behavior and, for large bulk spawns, a noticeable speedup.
+          </p>
 
           <h3>Queries as the iteration primitive</h3>
           <p>
@@ -362,12 +372,14 @@ manager.QueryMut&lt;Position, const Velocity&gt;(
             receives a <code>flecs::entity</code> and component references. The wrapper converts
             <code>entity.id()</code> to an <code>EntityID</code> and forwards the component references. The const vs
             mutable distinction is enforced at the type level, so if you pick <code>Query</code> you cannot
-            accidentally mutate components.
+            accidentally mutate components. Both methods also wrap the iteration in a Tracy profiler zone via
+            <code>ENTITY_MANAGER_ZONE_SCOPED</code>, so query cost shows up cleanly in profiles.
           </p>
           <p>
             The performance target for these iterations is on the order of 50&nbsp;ns per entity for common
             queries, which keeps a 20k-entity pass under roughly one millisecond. Archetype storage gives the
-            usual benefit: entities with the same component sets are adjacent in memory.
+            usual benefit: entities with the same component sets are adjacent in memory, and the queries walk
+            that memory linearly.
           </p>
 
           <h3>Threading: configuring Flecs, not replacing it</h3>
@@ -397,7 +409,7 @@ world.system&lt;Position, const Velocity&gt;("ProjectilePhysics")
             systems on the main thread before the main loop begins, and then let Flecs handle slicing entity sets
             across worker threads for systems marked <code>.multi_threaded()</code>. Structural changes that occur
             inside those systems are automatically deferred to per-thread stages and merged at synchronization
-            points.
+            points when the world progresses.
           </p>
 
           <h3>Error handling: null pointers and expected errors</h3>
