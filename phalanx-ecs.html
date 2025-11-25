@@ -15,7 +15,7 @@
   <nav class="navbar">
     <div class="container">
       <div class="nav-brand">
-        <h1><a href="index.html" style="color: inherit; text-decoration: none;">zix Performance Labs</a></h1>
+        <h1><a href="index.html" style="color: inherit; text-decoration: none;">ziX Performance Labs</a></h1>
       </div>
       <ul class="nav-menu">
         <li><a href="about.html">About</a></li>
@@ -120,8 +120,9 @@
             is to have a small, well-documented surface that encodes the way we are willing to use it.
           </p>
 
-          <div class="code-block">
-<pre><code>using EntityID = flecs::entity_t;
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">entity_manager.h</p>
+            <pre class="article-code-text cpp">using EntityID = flecs::entity_t;
 
 enum class ECSError {
   EntityNotFound,
@@ -174,7 +175,7 @@ public:
 
 private:
   mutable flecs::world world_;
-};</code></pre>
+};</pre>
           </div>
 
           <p>
@@ -281,24 +282,26 @@ struct StructureTag {};</code></pre>
             pointer invalidation, and they include minimal examples of what goes wrong if you ignore that fact.
           </p>
 
-          <div class="code-block">
-<pre><code>// Danger: AddComponent invalidates all component pointers.
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">structural_changes.cpp</p>
+            <pre class="article-code-text cpp">// Danger: AddComponent invalidates all component pointers.
 Position* pos = manager.GetComponentMut&lt;Position&gt;(entity);
 pos-&gt;x = 10.0f;
 manager.AddComponent(entity, Energy{100.0f, 100.0f}); // archetype migration
-pos-&gt;y = 20.0f; // undefined behavior: pos is now dangling</code></pre>
+pos-&gt;y = 20.0f; // undefined behavior: pos is now dangling</pre>
           </div>
 
           <p>
             The safe pattern for single entities is to re-query after a structural change:
           </p>
 
-          <div class="code-block">
-<pre><code>Position* pos = manager.GetComponentMut&lt;Position&gt;(entity);
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">structural_changes.cpp</p>
+            <pre class="article-code-text cpp">Position* pos = manager.GetComponentMut&lt;Position&gt;(entity);
 pos-&gt;x = 10.0f;
 manager.AddComponent(entity, Energy{100.0f, 100.0f});
 pos = manager.GetComponentMut&lt;Position&gt;(entity); // fresh pointer
-pos-&gt;y = 20.0f;</code></pre>
+pos-&gt;y = 20.0f;</pre>
           </div>
 
           <p>
@@ -308,14 +311,15 @@ pos-&gt;y = 20.0f;</code></pre>
             ends, those queued operations are applied.
           </p>
 
-          <div class="code-block">
-<pre><code>auto batch = manager.BeginStructuralChangeBatch();
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">structural_changes.cpp</p>
+            <pre class="article-code-text cpp">auto batch = manager.BeginStructuralChangeBatch();
 
 for (int i = 0; i &lt; 1000; ++i) {
   EntityID id = manager.CreateEntity();
   batch.AddComponent(id, Position{float(i), 0.0f, 0.0f});
   batch.AddComponent(id, Health{100.0f, 100.0f});
-} // destructor calls defer_end(), applying queued changes</code></pre>
+} // destructor calls defer_end(), applying queued changes</pre>
           </div>
 
           <p>
@@ -337,8 +341,9 @@ for (int i = 0; i &lt; 1000; ++i) {
             <code>Query</code> for read-only access and <code>QueryMut</code> for mutable access.
           </p>
 
-          <div class="code-block">
-<pre><code>manager.Query&lt;Position, const Velocity&gt;(
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">queries.cpp</p>
+            <pre class="article-code-text cpp">manager.Query&lt;Position, const Velocity&gt;(
   [](EntityID id, const Position&amp; pos, const Velocity&amp; vel) {
     // read-only path
   });
@@ -349,7 +354,7 @@ manager.QueryMut&lt;Position, const Velocity&gt;(
     pos.x += vel.x * dt;
     pos.y += vel.y * dt;
     pos.z += vel.z * dt;
-  });</code></pre>
+  });</pre>
           </div>
 
           <p>

@@ -417,3 +417,127 @@ footer p {
         padding: 0 20px;
     }
 }
+
+/* =====================================
+   Code Block Styles
+   ===================================== */
+
+/* Inline code styling */
+code {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 0.9em;
+    background-color: rgba(0, 0, 0, 0.05);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+}
+
+/* Legacy .code-block styling for backward compatibility */
+.code-block {
+    background-color: #f6f8fa;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    margin: 24px 0;
+    padding: 16px;
+    overflow-x: auto;
+}
+
+.code-block pre {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    border: none;
+}
+
+.code-block pre code {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    display: block;
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+}
+
+/* New article-code panel system */
+.article-code {
+    background-color: #f6f8fa;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    margin: 24px 0;
+    padding: 16px 20px;
+    overflow-x: auto;
+}
+
+.article-code.draw-left-line {
+    border-left: 3px solid var(--link-color);
+    padding-left: 20px;
+}
+
+/* File label pill above code block */
+.article-code-file {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+    background-color: rgba(0, 0, 0, 0.05);
+    padding: 4px 10px;
+    border-radius: 4px;
+    display: inline-block;
+    margin-bottom: 12px;
+    border: 1px solid var(--border-color);
+}
+
+.article-code-file.mark-section {
+    font-weight: 600;
+}
+
+/* Code text styling */
+.article-code-text {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    white-space: pre;
+    overflow-x: auto;
+}
+
+/* Language variants */
+.article-code-text.cpp {
+    tab-size: 4;
+}
+
+/* Token classes for syntax highlighting (future refinement) */
+.code-r { color: #d73a49; }  /* reserved words (keywords) */
+.code-t { color: #6f42c1; }  /* types */
+.code-w { color: #005cc5; }  /* member fields */
+.code-a { color: #e36209; }  /* arguments */
+.code-v { color: #24292e; }  /* locals */
+.code-f { color: #6f42c1; }  /* function names */
+.code-j { color: #d73a49; }  /* flow keywords */
+.code-c { color: #6a737d; }  /* comments */
+.code-n { color: #005cc5; }  /* namespaces */
+.code-d { color: #005cc5; }  /* enum constants */
+.code-s { color: #24292e; }  /* structural symbols */
+
+/* Responsive adjustments for code blocks */
+@media (max-width: 768px) {
+    .code-block,
+    .article-code {
+        margin: 16px -20px;
+        border-radius: 0;
+        border-left: none;
+        border-right: none;
+    }
+
+    .article-code.draw-left-line {
+        border-left: 3px solid var(--link-color);
+    }
+
+    .code-block pre code,
+    .article-code-text {
+        font-size: 13px;
+    }
+}
