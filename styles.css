@@ -496,6 +496,14 @@ figure {
     transition: transform 0.3s ease;
 }
 
+/* Responsive images in article content */
+.blog-post .content figure img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+}
+
 .hero-image::after {
     content: '';
     position: absolute;
