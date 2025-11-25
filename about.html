@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="About Colin MacRitchie (ShaiKKO), Principal Engineer">
+    <meta name="description" content="About Colin MacRitchie (ShaiKKO) — building engines, tools, and infrastructure for games that have to run fast">
     <title>About | ziX Performance Labs</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -34,38 +34,43 @@
                 <div class="about-section">
                     <p>
                         Hello! I'm Colin MacRitchie, also known as <strong>ShaiKKO</strong> in the tech community. 
-                        I work as a Principal Engineer.
+                        I build engines, tools, and infrastructure for games that have to run fast.
                     </p>
                     <p>
-                        I've dedicated my career to building robust, scalable systems and leading 
-                        technical teams to deliver exceptional software solutions.
+                        Right now, most of that work is on PHALANX—a mech game targeting 144 FPS with tens of 
+                        thousands of entities per frame. That means ECS wrappers, custom memory allocators, 
+                        physics integration, and a lot of time staring at profilers trying to figure out where 
+                        the milliseconds went.
                     </p>
                     <p>
-                        My passion lies in solving complex technical challenges, architecting systems 
-                        that stand the test of time, and mentoring the next generation of engineers.
+                        I'm interested in the kind of problems where the obvious solution doesn't actually solve it. 
+                        Cache-aware data layouts, predictable allocation patterns, pointer lifetimes, and the 
+                        tradeoffs that come from trying to make something work reliably under load.
                     </p>
                 </div>
 
                 <div class="about-section">
                     <h2>What I Do</h2>
                     <p>
-                        As a Principal Engineer, my role encompasses:
+                        I write systems code. The kind where you care about nanoseconds per operation and where 
+                        "fast enough" has a number attached to it. The articles on this site cover the decisions 
+                        that come out of that work:
                     </p>
                     <ul>
-                        <li>Leading technical architecture and design decisions</li>
-                        <li>Building and scaling high-performance systems</li>
-                        <li>Mentoring and guiding engineering teams</li>
-                        <li>Driving technical strategy and innovation</li>
-                        <li>Solving complex technical challenges</li>
+                        <li>Entity-component systems that can handle 90k entities at 144 Hz</li>
+                        <li>Memory systems with explicit budgets and frame/pool/heap splits</li>
+                        <li>Physics-driven mechanics that replace hard stuns with continuous stability</li>
+                        <li>The architectural choices that make or break frame time</li>
                     </ul>
                 </div>
 
                 <div class="about-section">
                     <h2>This Blog</h2>
                     <p>
-                        I created this blog to share my experiences, insights, and learnings from 
-                        my journey in software engineering. You'll find technical deep-dives, 
-                        architectural patterns, lessons learned, and thoughts on technical leadership.
+                        This is where I write about the technical work—the tradeoffs, the surprises, and the 
+                        things that looked good on paper but fell apart under load. If you're interested in 
+                        low-level design, mechanical sympathy, or game engine internals, you'll probably find 
+                        something useful here.
                     </p>
                 </div>
             </section>
