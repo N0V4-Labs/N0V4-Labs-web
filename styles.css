@@ -46,8 +46,17 @@ figure {
     
     /* Code block colors */
     --code-bg: #2d2b33;
+    --code-bg-gradient-end: #252329;
     --code-header-bg: #44444E;
     --code-accent: #715A5A;
+    
+    /* Window button colors */
+    --btn-close: #ff5f56;
+    --btn-minimize: #ffbd2e;
+    --btn-maximize: #27ca41;
+    
+    /* Hover state */
+    --hover-overlay: rgba(113, 90, 90, 0.1);
 }
 
 body {
@@ -299,7 +308,7 @@ tr:last-child td {
 }
 
 tr:hover {
-    background: rgba(113, 90, 90, 0.1);
+    background: var(--hover-overlay);
 }
 
 figcaption {
@@ -501,7 +510,7 @@ code {
 
 /* Legacy .code-block styling for backward compatibility */
 .code-block {
-    background: linear-gradient(135deg, var(--code-bg) 0%, #252329 100%);
+    background: linear-gradient(135deg, var(--code-bg) 0%, var(--code-bg-gradient-end) 100%);
     border: 1px solid var(--border-color);
     border-radius: 12px;
     margin: 32px 0;
@@ -527,9 +536,9 @@ code {
     left: 16px;
     width: 12px;
     height: 12px;
-    background: #ff5f56;
+    background: var(--btn-close);
     border-radius: 50%;
-    box-shadow: 20px 0 0 #ffbd2e, 40px 0 0 #27ca41;
+    box-shadow: 20px 0 0 var(--btn-minimize), 40px 0 0 var(--btn-maximize);
 }
 
 .code-block pre {
@@ -554,7 +563,7 @@ code {
 
 /* New article-code panel system - Premium design */
 .article-code {
-    background: linear-gradient(135deg, var(--code-bg) 0%, #252329 100%);
+    background: linear-gradient(135deg, var(--code-bg) 0%, var(--code-bg-gradient-end) 100%);
     border: 1px solid var(--border-color);
     border-radius: 12px;
     margin: 32px 0;
@@ -590,10 +599,10 @@ code {
     display: inline-block;
     width: 12px;
     height: 12px;
-    background: #ff5f56;
+    background: var(--btn-close);
     border-radius: 50%;
     margin-right: 8px;
-    box-shadow: 20px 0 0 #ffbd2e, 40px 0 0 #27ca41;
+    box-shadow: 20px 0 0 var(--btn-minimize), 40px 0 0 var(--btn-maximize);
 }
 
 .article-code-file.mark-section {
