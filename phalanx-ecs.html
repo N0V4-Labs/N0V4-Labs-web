@@ -72,7 +72,7 @@
           <h3>Numbers first</h3>
           <p>
             It is easy to say “we want something fast and scalable” and then stop there. That kind of requirement
-            is hard to falsify. Instead, for PHALANX the ECS layer writes down a tiny table of operation-level
+            is hard to falsify. Instead, we write down a tiny table of operation-level
             targets. If we drift far outside of these, something is wrong.
           </p>
 
@@ -129,7 +129,7 @@
 
           <h3>Flecs under the hood, EntityManager in front</h3>
           <p>
-            PHALANX uses <code>Flecs 4</code> as the core ECS runtime. Flecs stores entities with identical
+            We use <code>Flecs 4</code> as the core ECS runtime. Flecs stores entities with identical
             component signatures contiguously in archetype tables and gives you an API for querying and updating
             those tables. It also supplies a staging system and multi-threaded system execution.
           </p>
