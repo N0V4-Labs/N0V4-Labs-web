@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Inside PHALANX's ECS: Wrapping Flecs for 90k Entities">
+    <title>Inside PHALANX's ECS: Wrapping Flecs for 90k Entities | Overreacted</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Merriweather:ital,wght@0,300;0,400;0,700;0,900;1,400&family=Montserrat:wght@400;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .blog-post .content pre {
+            background-color: #282c35;
+            color: #f8f8f2;
+            padding: 16px 20px;
+            border-radius: 4px;
+            overflow-x: auto;
+            margin-bottom: 24px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .blog-post .content code {
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 0.9em;
+        }
+        .blog-post .content p code {
+            background-color: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .blog-post .content img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            margin: 24px 0;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <nav class="navbar">
+            <div class="container">
+                <div class="nav-brand">
+                    <h1><a href="index.html" style="color: inherit; text-decoration: none;">Overreacted</a></h1>
+                </div>
+                <ul class="nav-menu">
+                    <li><a href="about.html">About</a></li>
+                </ul>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+        <div class="container">
+            <section class="blog-content">
+                <article class="blog-post">
+                    <h2>Inside PHALANX's ECS: Wrapping Flecs for 90k Entities</h2>
+                    <div class="meta">
+                        November 25, 2025
+                    </div>
+                    <div class="content">
+                        <p>
+                            PHALANX is a tower defense game where thousands of entities—turrets, projectiles, enemies, and effects—must coexist and interact every frame. When you're tracking 90,000 entities with complex behaviors, your entity management system becomes the beating heart of everything. Get it wrong, and you're dead in the water. Get it right, and the game practically writes itself.
+                        </p>
+                        <p>
+                            We chose <strong>Flecs 4.x</strong> as our underlying ECS framework. Flecs is fast, data-oriented, and battle-tested. But like any powerful library, it comes with opinions and conventions that don't always align with what you want your game code to look like. Rather than scatter raw Flecs calls throughout our codebase, we wrapped it in a thin abstraction layer: the <code>phalnx::ecs::EntityManager</code>. This article explains why we did that, how the abstraction works, and the specific design decisions that make it tick.
+                        </p>
+
+                        <h3>Why Wrap Flecs at All?</h3>
+                        <p>
+                            You might wonder: if Flecs is so good, why not use it directly? The answer is the same reason you don't pass raw database connections around your application. Flecs exposes a massive API surface—entity creation, component assignment, queries, observers, relationships, and more. If every system in your game reaches directly into Flecs, you've coupled your entire codebase to a specific library version. Any Flecs API change forces rewrites everywhere.
+                        </p>
+                        <p>
+                            More importantly, a thin wrapper lets us enforce <em>our</em> conventions. We want all structural changes (entity creation, component addition, entity deletion) to go through a batching mechanism. We want type-safe error handling via <code>std::expected</code>. We want a clear distinction between read-only queries and mutable queries. The wrapper is where we codify these rules.
+                        </p>
+
+                        <h3>The EntityManager: A Single Point of Control</h3>
+                        <p>
+                            The <code>EntityManager</code> class is the gateway to everything ECS in PHALANX. It owns the Flecs <code>ecs_world_t</code> pointer and provides methods to create entities, query for components, and control threading. Here's the skeleton:
+                        </p>
+<pre><code>namespace phalnx::ecs {
+
+class EntityManager {
+public:
+    EntityManager();
+    ~EntityManager();
+
+    // Disable copying, allow moving
+    EntityManager(const EntityManager&amp;) = delete;
+    EntityManager&amp; operator=(const EntityManager&amp;) = delete;
+    EntityManager(EntityManager&amp;&amp;) noexcept;
+    EntityManager&amp; operator=(EntityManager&amp;&amp;) noexcept;
+
+    // Access the underlying Flecs world
+    ecs_world_t* GetWorld() const noexcept;
+
+    // Threading configuration
+    void SetThreadCount(int32_t count);
+
+    // Entity creation returns an EntityID
+    EntityID CreateEntity();
+
+    // Queries
+    template&lt;typename... Components&gt;
+    auto Query() const;
+
+    template&lt;typename... Components&gt;
+    auto QueryMut();
+
+private:
+    ecs_world_t* world_;
+};
+
+}</code></pre>
+                        <p>
+                            Notice a few things. First, the class is non-copyable but movable. An ECS world is a heavyweight resource; copying it would be expensive and semantically dubious. Second, we expose <code>GetWorld()</code> for cases where you genuinely need raw Flecs access—rare, but sometimes necessary for advanced features. Third, we distinguish between <code>Query()</code> (const, read-only) and <code>QueryMut()</code> (non-const, can modify components). This distinction is baked into the type system, so you can't accidentally mutate data in a read-only context.
+                        </p>
+
+                        <h3>EntityID: More Than Just an Integer</h3>
+                        <p>
+                            Flecs represents entities as 64-bit integers. That's fine internally, but raw integers in game code are a recipe for bugs. Is <code>42</code> an entity ID? A tile index? A damage value? Who knows! So we wrap it:
+                        </p>
+<pre><code>struct EntityID {
+    uint64_t value;
+
+    bool operator==(const EntityID&amp; other) const noexcept {
+        return value == other.value;
+    }
+
+    bool operator!=(const EntityID&amp; other) const noexcept {
+        return value != other.value;
+    }
+
+    explicit operator bool() const noexcept {
+        return value != 0;
+    }
+};</code></pre>
+                        <p>
+                            This is a classic strong-typedef pattern. The <code>EntityID</code> struct is trivially copyable, compares correctly, and converts to <code>bool</code> so you can check if it's valid. But you can't accidentally pass it to a function expecting a raw <code>uint64_t</code>. The type system catches mistakes at compile time, which is exactly where you want them caught.
+                        </p>
+
+                        <h3>The StructuralChangeBatch: Deferring Dangerous Operations</h3>
+                        <p>
+                            Here's a subtle problem with ECS systems: if you iterate over entities and, mid-iteration, create or destroy an entity, you can invalidate the iterator. Flecs handles this internally by deferring structural changes, but we wanted explicit control. Enter the <code>StructuralChangeBatch</code>:
+                        </p>
+<pre><code>class StructuralChangeBatch {
+public:
+    explicit StructuralChangeBatch(EntityManager&amp; manager);
+    ~StructuralChangeBatch();
+
+    // Queue entity creation
+    EntityID CreateEntity();
+
+    // Queue entity destruction
+    void DestroyEntity(EntityID id);
+
+    // Queue component addition
+    template&lt;typename T&gt;
+    void AddComponent(EntityID id, T&amp;&amp; component);
+
+    // Queue component removal
+    template&lt;typename T&gt;
+    void RemoveComponent(EntityID id);
+
+    // Apply all queued changes
+    void Commit();
+
+private:
+    EntityManager&amp; manager_;
+    std::vector&lt;/* internal batch data */&gt; pending_;
+};</code></pre>
+                        <p>
+                            The idea is simple: you create a batch, queue up all your structural changes, and then call <code>Commit()</code>. All the dangerous operations happen in one atomic burst, after you've finished iterating. This eliminates an entire class of iterator-invalidation bugs.
+                        </p>
+                        <p>
+                            The destructor can optionally commit pending changes automatically, but we prefer explicit commits. Implicit behavior in destructors is a footgun; you can't tell from a glance at the code whether the changes actually happened. So we leave <code>Commit()</code> explicit, and the destructor just releases resources.
+                        </p>
+
+                        <h3>Components: Plain Old Data</h3>
+                        <p>
+                            PHALANX components are deliberately boring. They're POD (Plain Old Data) structs with no behavior. No virtual functions, no inheritance, no constructors with side effects. Just data:
+                        </p>
+<pre><code>struct Position {
+    float x;
+    float y;
+    float z;
+};
+
+struct Velocity {
+    float dx;
+    float dy;
+    float dz;
+};
+
+struct Health {
+    int32_t current;
+    int32_t maximum;
+};
+
+struct TurretData {
+    float range;
+    float fireRate;
+    float lastFireTime;
+    EntityID targetEntity;
+};</code></pre>
+                        <p>
+                            Why POD? Because the ECS pattern separates data from behavior. Components are <em>just</em> data. Behavior lives in systems that query for components and operate on them. This separation is the entire point of ECS. When components are plain structs, they're trivially copyable, trivially movable, and cache-friendly when packed into arrays. The CPU loves this.
+                        </p>
+
+                        <h3>The ComponentRegistry: Type Safety for Component IDs</h3>
+                        <p>
+                            Flecs uses component IDs to identify component types. Internally, these are integers derived from the type. But again, we want type safety. The <code>ComponentRegistry</code> handles registration and lookup:
+                        </p>
+<pre><code>class ComponentRegistry {
+public:
+    explicit ComponentRegistry(EntityManager&amp; manager);
+
+    template&lt;typename T&gt;
+    void Register();
+
+    template&lt;typename T&gt;
+    ecs_entity_t GetComponentId() const;
+
+private:
+    EntityManager&amp; manager_;
+    // Internal mapping from type_index to Flecs component ID
+};</code></pre>
+                        <p>
+                            You register your component types once at startup. After that, <code>GetComponentId&lt;Position&gt;()</code> returns the Flecs ID for the <code>Position</code> component. If you call it for an unregistered type, you get a compile-time or runtime error (depending on configuration), not silent garbage.
+                        </p>
+
+                        <h3>Error Handling with std::expected</h3>
+                        <p>
+                            C++ exceptions are controversial in game development. They add overhead, complicate control flow, and interact poorly with some toolchains. PHALANX uses <code>std::expected</code> for fallible operations. If entity creation can fail (e.g., out of memory), we return <code>std::expected&lt;EntityID, EcsError&gt;</code>:
+                        </p>
+<pre><code>enum class EcsError {
+    OutOfMemory,
+    InvalidEntity,
+    ComponentNotRegistered,
+    WorldNotInitialized
+};
+
+std::expected&lt;EntityID, EcsError&gt; EntityManager::TryCreateEntity() {
+    if (!world_) {
+        return std::unexpected(EcsError::WorldNotInitialized);
+    }
+    ecs_entity_t e = ecs_new(world_);
+    if (e == 0) {
+        return std::unexpected(EcsError::OutOfMemory);
+    }
+    return EntityID{e};
+}</code></pre>
+                        <p>
+                            Callers must explicitly handle the error case—or they don't compile. No more forgetting to check return values. This pattern propagates throughout the ECS layer. Every operation that can fail returns an <code>expected</code>. Every operation that cannot fail (e.g., getting a component from a known-valid entity with a known-valid component) returns directly.
+                        </p>
+
+                        <h3>Query and QueryMut: The Const Distinction</h3>
+                        <p>
+                            PHALANX has two query flavors. <code>Query&lt;Position, Velocity&gt;()</code> returns an iterator over read-only references to those components. <code>QueryMut&lt;Health&gt;()</code> returns mutable references. The distinction is crucial for parallelism: read-only queries can run concurrently without locking, while mutable queries need synchronization.
+                        </p>
+<pre><code>// Read-only: multiple systems can run this in parallel
+for (auto [entity, pos, vel] : manager.Query&lt;Position, Velocity&gt;()) {
+    // pos and vel are const references
+    float distance = std::sqrt(pos.x*pos.x + pos.y*pos.y + pos.z*pos.z);
+    // ...
+}
+
+// Mutable: needs exclusive access
+for (auto [entity, health] : manager.QueryMut&lt;Health&gt;()) {
+    health.current = std::min(health.current + 1, health.maximum);
+}</code></pre>
+                        <p>
+                            Under the hood, both queries wrap Flecs' query API. The difference is in the return types. <code>Query</code> returns <code>const T&amp;</code>; <code>QueryMut</code> returns <code>T&amp;</code>. It's a small thing, but it makes the intent visible in the code. When reviewing a system, you immediately see whether it reads or writes.
+                        </p>
+
+                        <h3>Threading: SetThreadCount and the Flecs Pipeline</h3>
+                        <p>
+                            Flecs supports multi-threaded system execution. You configure it by calling <code>ecs_set_threads(world, count)</code>. We expose this via <code>EntityManager::SetThreadCount()</code>:
+                        </p>
+<pre><code>void EntityManager::SetThreadCount(int32_t count) {
+    if (world_ &amp;&amp; count &gt; 0) {
+        ecs_set_threads(world_, count);
+    }
+}</code></pre>
+                        <p>
+                            In PHALANX, we typically set this to the number of physical cores minus one (leaving a core for the main thread's rendering work). Flecs then parallelizes system execution across those threads, respecting read/write dependencies automatically. Our <code>Query</code>/<code>QueryMut</code> distinction helps Flecs reason about which systems can run in parallel.
+                        </p>
+
+                        <h3>GetWorld: The Escape Hatch</h3>
+                        <p>
+                            Sometimes you need raw Flecs. Maybe you're using an advanced feature like observers, or integrating with a third-party library that speaks Flecs natively. <code>GetWorld()</code> exposes the underlying <code>ecs_world_t*</code>:
+                        </p>
+<pre><code>ecs_world_t* EntityManager::GetWorld() const noexcept {
+    return world_;
+}</code></pre>
+                        <p>
+                            Use this sparingly. Every raw Flecs call is a place where you bypass the wrapper's safety guarantees. But the escape hatch exists because pragmatism beats purity. We're shipping a game, not writing a doctoral thesis on abstraction.
+                        </p>
+
+                        <h3>Putting It All Together</h3>
+                        <p>
+                            Here's how a typical PHALANX system looks using this abstraction:
+                        </p>
+<pre><code>void UpdateTurrets(EntityManager&amp; manager, float deltaTime) {
+    StructuralChangeBatch batch(manager);
+
+    for (auto [entity, turret, pos] : manager.QueryMut&lt;TurretData, Position&gt;()) {
+        if (turret.targetEntity &amp;&amp; turret.lastFireTime + turret.fireRate &lt; currentTime) {
+            // Fire a projectile
+            EntityID projectile = batch.CreateEntity();
+            batch.AddComponent(projectile, Position{pos.x, pos.y, pos.z});
+            batch.AddComponent(projectile, Velocity{/* toward target */});
+            batch.AddComponent(projectile, ProjectileData{turret.targetEntity, 10});
+
+            turret.lastFireTime = currentTime;
+        }
+    }
+
+    batch.Commit();
+}</code></pre>
+                        <p>
+                            Notice how structural changes (creating the projectile, adding components) are batched and committed after the iteration. The query is mutable because we update <code>turret.lastFireTime</code>. The code is readable, type-safe, and performs well.
+                        </p>
+
+                        <h3>Design Constraints and Trade-offs</h3>
+                        <p>
+                            No abstraction is free. Ours has trade-offs worth discussing:
+                        </p>
+                        <p>
+                            <strong>Thin wrapper overhead.</strong> There's a function call layer between game code and Flecs. In practice, this is negligible—modern compilers inline aggressively, and the real work happens inside Flecs. We benchmarked both paths; the difference was in the noise.
+                        </p>
+                        <p>
+                            <strong>Feature coverage.</strong> We only wrap the Flecs features we use. Observers, relationships, prefabs—these exist in Flecs but not in our wrapper. If we need them, we add them. This keeps the wrapper small and auditable. You understand it by reading it, not by studying documentation for a library.
+                        </p>
+                        <p>
+                            <strong>Migration cost.</strong> If Flecs 5.0 changes significantly, we update the wrapper, not the entire codebase. This is the whole point. The wrapper is a seam where we can swap implementations.
+                        </p>
+
+                        <h3>Performance at Scale</h3>
+                        <p>
+                            PHALANX runs 90,000 entities at 60fps on mid-range hardware. The ECS is not the bottleneck—rendering is. But ECS performance matters for headroom. We profile regularly. Flecs' archetype storage means queries iterate contiguous memory. Cache lines stay hot. Branch prediction stays happy. The <code>StructuralChangeBatch</code> reduces Flecs overhead by bundling operations.
+                        </p>
+                        <p>
+                            With 8 threads, our heaviest system (pathfinding for enemies) runs in under 2ms for 20,000 entities. That leaves 14ms for everything else in a 60fps budget. The abstraction doesn't cost us anything measurable; it just makes the code safer and easier to maintain.
+                        </p>
+
+                        <h3>One More Thing: The Turret</h3>
+                        <p>
+                            Oh yeah: here is a render of our turret design for T1 turrets in PHALANX. This is what those <code>TurretData</code> and <code>Position</code> components ultimately represent—a physical, rendered object in the game world:
+                        </p>
+                        <img src="t1-outer-tower-v2-final-Rendered.png" alt="T1 Turret Render for PHALANX">
+                        <p>
+                            Every entity in the ECS that represents a turret carries components describing its position, orientation, targeting behavior, and visual state. The beauty of ECS is that this data is just data—serializable, debuggable, and independent of the rendering pipeline that turns it into pixels.
+                        </p>
+
+                        <h3>Conclusion</h3>
+                        <p>
+                            Wrapping Flecs wasn't about distrusting the library. It was about owning our interface. The <code>EntityManager</code> gives us a single point of control. The <code>StructuralChangeBatch</code> prevents iterator invalidation. Strong types like <code>EntityID</code> catch bugs at compile time. <code>std::expected</code> forces explicit error handling. The <code>Query</code>/<code>QueryMut</code> distinction encodes read/write intent in the type system.
+                        </p>
+                        <p>
+                            None of this is revolutionary. It's just careful API design applied to ECS integration. The result is a codebase where systems are easy to write, easy to reason about, and hard to break. For a game with 90,000 entities, that's exactly what we need.
+                        </p>
+                    </div>
+                </article>
+            </section>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p><a href="https://github.com/N0V4-Labs" style="color: var(--link-color); text-decoration: none;">github</a> • <a href="about.html" style="color: var(--link-color); text-decoration: none;">about</a></p>
+        </div>
+    </footer>
+</body>
+</html>
