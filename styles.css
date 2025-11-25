@@ -222,10 +222,16 @@ header {
 .hero h2 {
     font-size: 36px;
     font-weight: 600;
-    margin-bottom: 24px;
+    margin-bottom: 40px;
     line-height: 1.2;
     color: var(--text-color);
     letter-spacing: -0.02em;
+    font-style: italic;
+    padding: 24px 28px;
+    background: rgba(68, 68, 78, 0.25);
+    border-left: 4px solid var(--champagne-gold);
+    border-radius: 0 8px 8px 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
 .hero-subtitle {
@@ -266,12 +272,14 @@ header {
     background: rgba(68, 68, 78, 0.2);
     border-radius: 8px;
     border-left: 3px solid transparent;
-    transition: border-color 0.2s ease, background 0.2s ease;
+    transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .post-card:hover {
     border-left-color: var(--champagne-gold);
     background: rgba(68, 68, 78, 0.3);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
 .post-card:hover h3 {
