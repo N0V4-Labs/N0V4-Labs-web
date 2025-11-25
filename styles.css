@@ -873,7 +873,7 @@ code {
     height: 12px;
     background: var(--btn-close);
     border-radius: 50%;
-    margin-right: 8px;
+    margin-right: 48px;
     box-shadow: 20px 0 0 var(--btn-minimize), 40px 0 0 var(--btn-maximize);
 }
 

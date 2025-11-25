@@ -47,7 +47,7 @@
             6.94&nbsp;ms if you want to hit 144&nbsp;FPS.
           </p>
           <p>
-            This post digs into how the entity system is structured on top of <code>Flecs 4.x</code>, why it is wrapped
+            This post digs into how the entity system is structured on top of <code>Flecs 4</code>, why it is wrapped
             in <code>phalnx::ecs::EntityManager</code> rather than exposed directly, and what that buys in terms of
             performance and failure modes. The pattern is similar to the spinlock examples: write down the rules
             first, then write the code that has a chance of obeying them.
@@ -110,7 +110,7 @@
 
           <h3>Flecs under the hood, EntityManager in front</h3>
           <p>
-            PHALANX uses <code>Flecs 4.x</code> as the core ECS runtime. Flecs stores entities with identical
+            PHALANX uses <code>Flecs 4</code> as the core ECS runtime. Flecs stores entities with identical
             component signatures contiguously in archetype tables and gives you an API for querying and updating
             those tables. It also supplies a staging system and multi-threaded system execution.
           </p>
