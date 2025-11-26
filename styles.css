@@ -417,7 +417,7 @@ table {
     border-radius: 8px;
     overflow: hidden;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(113, 90, 90, 0.15);
-    border: none;
+    border: 1px solid rgba(113, 90, 90, 0.15);
 }
 
 thead {
