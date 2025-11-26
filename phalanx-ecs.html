@@ -56,15 +56,14 @@
             PHALANX's entity system exists so we do not have to find out how bad that can get.
           </p>
           <p>
-            If you want to update tens of thousands of small pieces of state at 144&nbsp;Hz, you do not get to scatter
+            If you want to update tens of thousands of small pieces of state and maintain performance&nbsp;, you do not get to scatter
             them around the heap in whatever shape feels comfortable that day. You need a plan.
           </p>
           <p>
             In a typical PHALANX match the number of player-controlled mechs is small, but the total entity count
             is not. Minions, projectiles, debris, particles, temporary vision probes, and assorted bits of
             simulation state all coexist. Peaks in the neighborhood of <strong>90,000 live entities</strong> are not
-            rare spikes; they are a design target. At the same time the total frame budget is 6.94&nbsp;ms if you want
-            to hit 144&nbsp;FPS.
+            rare spikes; they are a design target. At the same time the total frame budget we are aiming for is sub 8&nbsp;ms.
           </p>
           <p>
             This post digs into how the entity system is structured on top of <code>Flecs 4</code>, why it is wrapped
