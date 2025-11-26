@@ -220,12 +220,33 @@ header {
 }
 
 .hero h2 {
-    font-size: 36px;
-    font-weight: 600;
-    margin-bottom: 24px;
-    line-height: 1.2;
-    color: var(--text-color);
-    letter-spacing: -0.02em;
+    font-family: 'Merriweather', 'Georgia', serif;
+    font-size: 28px;
+    font-weight: 400;
+    font-style: italic;
+    margin-bottom: 32px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    letter-spacing: 0;
+    padding: 24px 32px;
+    position: relative;
+    border-left: 4px solid var(--champagne-gold);
+    background: linear-gradient(135deg, rgba(68, 68, 78, 0.4), rgba(55, 53, 62, 0.2));
+    border-radius: 0 12px 12px 0;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+}
+
+.hero h2::before {
+    content: '"';
+    position: absolute;
+    left: 16px;
+    top: 8px;
+    font-size: 64px;
+    color: var(--champagne-gold);
+    opacity: 0.4;
+    font-family: 'Georgia', serif;
+    font-style: normal;
+    line-height: 1;
 }
 
 .hero-subtitle {
@@ -781,7 +802,14 @@ blockquote::before {
     }
 
     .hero h2 {
-        font-size: 36px;
+        font-size: 22px;
+        padding: 20px 24px;
+    }
+
+    .hero h2::before {
+        font-size: 48px;
+        left: 12px;
+        top: 4px;
     }
 
     .hero-subtitle {
@@ -810,7 +838,14 @@ blockquote::before {
     }
 
     .hero h2 {
-        font-size: 32px;
+        font-size: 18px;
+        padding: 16px 20px;
+    }
+
+    .hero h2::before {
+        font-size: 40px;
+        left: 8px;
+        top: 0;
     }
 
     .container {
