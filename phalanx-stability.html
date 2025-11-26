@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="How PHALANX's stability bar uses physics-first stagger mechanics instead of hard stuns, with class-scaled thresholds and deterministic behavior.">
+  <meta name="description" content="How PHALANX replaces hard stuns with a continuous stability budget, physics-driven stagger states, and deterministic guardrails across classes and leg types.">
   <title>Inside PHALANX's Stability Bar: Physics-First Stagger Instead of Hard Stuns</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -34,604 +34,468 @@
         </div>
         <div class="content">
           <p>
-            Classic hard knockdowns look simple on paper and feel terrible in practice.
+            Traditional hard knockdowns are easy to implement and awful to play against.
           </p>
           <p>
-            You eat a couple of shots, lose control of your mech, watch your camera tip into the floor, and then sit there while the rest of the fight happens to you. Designers get a lever labeled "stun duration." Players get a binary experience: fine or helpless. Any attempt to make the crowd control (CC) more expressive usually turns into a pile of special cases.
+            You take a couple of hits, control is yanked away, the camera falls over, and you watch the rest of the fight happen to you. Designers get to tune a single scalar called “stun duration.” Everyone else gets a binary state: fully in control or not playing.
           </p>
           <p>
-            PHALANX goes a different way.
+            PHALANX replaces that switch with a <strong>continuous stability budget</strong>. Every mech tracks its posture on a 0–100+ scale. Weapons, abilities, terrain, and environmental events all add to that number. When the budget is exhausted, the physics system moves you through <em>stagger states</em> instead of a black-box stun.
           </p>
           <p>
-            Instead of a giant hidden "you're stunned now" flag, every mech carries a continuous <strong>stability budget</strong>. Weapons, abilities, and environmental events all push on that budget. The physics stagger system lives on top of it and decides, in a deterministic way, when you're wobbling, when you're in a full stagger, and when you've crossed the line into a rare full knockdown.
-          </p>
-          <p>
-            This post is about that system: how the stability bar is structured, why it is explicitly class-scaled, and how we avoid the usual failure modes—perma-stagger, unreadable fights, and "I died without understanding why"—without losing the ability to punish greedy positioning.
+            This article outlines how that system is structured, how it scales by class and leg type, and which guardrails stop it from degenerating into perma-stagger or unreadable fights.
           </p>
 
           <hr>
 
-          <h3>Numbers first</h3>
+          <h3>Mechanical sketch: what “stability” actually is</h3>
           <p>
-            As with the ECS layer, this starts with a small table of things that are allowed to happen.
-          </p>
-          <p>
-            The stability system works on a simple scale:
+            The stability system is intentionally small and table-driven. At the core:
           </p>
           <ul>
-            <li><strong>Stability scale:</strong> 0–100+ points (can overshoot the threshold)</li>
-            <li><strong>Passive decay:</strong> 10 points/second while not taking stability damage</li>
-            <li><strong>Update rate:</strong> 60 Hz</li>
-            <li><strong>Typical stagger duration:</strong> 2.0–3.0 seconds (by class)</li>
-            <li><strong>Typical knockdown duration:</strong> ~5.0 seconds (rare, expensive events only)</li>
+            <li><strong>Scale:</strong> 0–100+ points (values can overshoot thresholds).</li>
+            <li><strong>Update rate:</strong> 60 Hz, synced with simulation.</li>
+            <li><strong>Regen:</strong> 0 pts/s while taking stability damage or for 1.0 s after the last hit; then 10 pts/s for all classes while not staggered.</li>
+            <li><strong>Primary posture state:</strong> Soft Stagger, lasting 2.0–3.0 s by class, extendable in 0.5 s steps to a hard cap of 5.0 s.</li>
+            <li><strong>Rare hard control:</strong> Hard Knockdown, ~3–5 s depending on class, reserved for ultimates and major map events.</li>
           </ul>
-          <p>
-            Each mech class has its own stability threshold. A light mech hits the "you are out of balance" line much sooner than an assault, but recovers faster. An assault mech has the opposite profile: hard to topple, slow to come back once you get there.
-          </p>
 
+          <h4>Class thresholds and leg multipliers</h4>
+          <p>
+            Each chassis class contributes a base stability threshold:
+          </p>
           <figure>
-            <figcaption><strong>Table 1: Stability thresholds by class</strong></figcaption>
+            <figcaption><strong>Table 1: Base class thresholds</strong></figcaption>
             <table>
               <thead>
-              <tr>
-                <th>Class</th>
-                <th>Stability Threshold</th>
-                <th>Stagger Duration</th>
-                <th>Recovery Speed</th>
-              </tr>
+                <tr>
+                  <th>Class</th>
+                  <th>Base Threshold</th>
+                  <th>Base Soft Stagger Duration</th>
+                </tr>
               </thead>
               <tbody>
-              <tr>
-                <td>Light</td>
-                <td>30</td>
-                <td>2.0 s</td>
-                <td>Fast</td>
-              </tr>
-              <tr>
-                <td>Medium</td>
-                <td>50</td>
-                <td>2.5 s</td>
-                <td>Moderate</td>
-              </tr>
-              <tr>
-                <td>Heavy</td>
-                <td>70</td>
-                <td>3.0 s</td>
-                <td>Slow</td>
-              </tr>
-              <tr>
-                <td>Assault</td>
-                <td>90</td>
-                <td>3.0 s</td>
-                <td>Very slow</td>
-              </tr>
+                <tr>
+                  <td>Light</td>
+                  <td>30</td>
+                  <td>2.0 s</td>
+                </tr>
+                <tr>
+                  <td>Medium</td>
+                  <td>50</td>
+                  <td>2.5 s</td>
+                </tr>
+                <tr>
+                  <td>Heavy</td>
+                  <td>70</td>
+                  <td>3.0 s</td>
+                </tr>
+                <tr>
+                  <td>Assault</td>
+                  <td>90</td>
+                  <td>3.0 s</td>
+                </tr>
               </tbody>
             </table>
           </figure>
-
           <p>
-            The bar you see in the HUD fills from 0% upward as you take impacts. Under the hood, a light and an assault mech might both show "70% full," but those numbers mean different things:
+            Leg configuration then scales that threshold:
           </p>
-          <ul>
-            <li>On a <strong>light</strong> frame, 70% means "you are well past the stagger threshold; one more solid hit and you're flirting with hard stagger or knockdown."</li>
-            <li>On an <strong>assault</strong> frame, 70% is still pre-stagger territory—dangerous, but not catastrophic.</li>
-          </ul>
-          <p>
-            The HUD never asks you to track raw thresholds. It shows:
-          </p>
-          <ul>
-            <li>A <strong>class-colored bar</strong> with a clear threshold marker (a white tick at the class limit).</li>
-            <li>A <strong>color ramp</strong> as you cross specific ranges:
-              <ul>
-                <li>0–30%: safe, green</li>
-                <li>31–50%: green-yellow, "you're feeling it, but fine"</li>
-                <li>51–70%: yellow, mild pulsing, active balancing</li>
-                <li>71–90%: orange, heavy pulsing, "you are pushing it"</li>
-                <li>91–99%: red, "imminent stagger"</li>
-              </ul>
-            </li>
-            <li>On threshold breach:
-              <ul>
-                <li>200 ms smooth fill on the hit</li>
-                <li>500 ms threshold flash</li>
-                <li>Bar scale up to 110%, then settle back to 100%</li>
-              </ul>
-            </li>
-          </ul>
-          <p>
-            The point is the same as with the ECS timing table: when we discuss a change, we're not arguing about whether a mech "feels too squishy." We're asking specific questions like "should a medium frame really survive three full autocannon bursts at 85% stability without hitting hard stagger?"
-          </p>
-
-          <hr>
-
-          <h3>States instead of stuns</h3>
-          <p>
-            Most of the work happens <em>before</em> you actually stagger.
-          </p>
-          <p>
-            The stability bar is partitioned into <strong>pre-stagger warning states</strong>. They all share the same idea: the more stability you burn, the more of your mech's motion budget is spent on staying upright instead of doing what you want.
-          </p>
-          <p>
-            A simplified version of the ladder looks like this:
-          </p>
-
-          <h4>Stage 1 – Stable Foundation (0–30%)</h4>
-          <ul>
-            <li>Posture: standard combat stance.</li>
-            <li>Gait: normal stride length and cadence.</li>
-            <li>Crosshair: steady.</li>
-            <li>Screen: no stability-specific effects.</li>
-          </ul>
-
-          <h4>Stage 2 – Initial Compensation (31–50%)</h4>
-          <ul>
-            <li>Small head-bob and camera sway.</li>
-            <li>Slight inertial delay on rapid direction changes.</li>
-            <li>Stability bar gains a gentle yellow tint.</li>
-          </ul>
-
-          <h4>Stage 3 – Active Balancing (51–70%)</h4>
-          <ul>
-            <li>Stride shortens; foot plants become more pronounced.</li>
-            <li>Walk cycle slows by ~25%.</li>
-            <li>Crosshair sway increases; fine aim requires more correction.</li>
-            <li>Stability bar pulses in yellow.</li>
-          </ul>
-
-          <h4>Stage 4 – Critical Instability (71–90%)</h4>
-          <ul>
-            <li>Shuffle steps, constant posture corrections.</li>
-            <li>Stronger camera sway; screen-space vignette around the edges.</li>
-            <li>Stability bar pulses in orange with higher intensity.</li>
-          </ul>
-
-          <h4>Stage 5 – Imminent Stagger (91–99%)</h4>
-          <ul>
-            <li>Every movement feels hesitant; short "catch" animations on sharp inputs.</li>
-            <li>Input smoothing increases slightly—your mech is fighting you.</li>
-            <li>Stability bar is red, with a sharp pulse on each impact.</li>
-          </ul>
-
-          <p>
-            Nothing here removes your agency. You can still move, aim, and fire. The system is simply telling you: you are spending more and more of your mech's control authority on fighting basic physics. If you keep greedily peeking at 95% stability, you are volunteering to lose the next trade.
-          </p>
-
-          <hr>
-
-          <h3>Crossing the line: stagger and knockdown</h3>
-          <p>
-            When an impact pushes you past your class threshold, the system runs a fixed <strong>stagger trigger sequence</strong> over a couple of seconds. It is not a black-box "you're stunned now" event; it is a scripted, class-tuned set of poses that gives you and everyone around you a clear read on what just happened.
-          </p>
-          <p>
-            A simplified timeline:
-          </p>
-          <ul>
-            <li><strong>Frames 0–5 (~0–83 ms)</strong><br>
-              Impact: white hit flash, stability bar overshoots threshold, small camera jolt.</li>
-            <li><strong>Frames 6–15 (~84–250 ms)</strong><br>
-              Stumble: mech lurches, movement speed drops by ~50%.</li>
-            <li><strong>Frames 16–30 (~251–500 ms)</strong><br>
-              Catch: arms and upper body swing out, one knee may dip as the mech tries to brace.</li>
-            <li><strong>Frames 31–60 (~0.5–1.0 s)</strong><br>
-              Stabilize: wide stance, center of gravity lowered, locomotion heavily constrained.</li>
-            <li><strong>Frames 61–120 (~1–2 s)</strong><br>
-              Hold: frozen in stagger pose; strong aim penalties, most high-mobility abilities disabled.</li>
-            <li><strong>Frames 121–180 (~2–3 s)</strong><br>
-              Recover: posture blends back toward normal, movement and aim unlock in steps.</li>
-          </ul>
-          <p>
-            Class tuning makes the same mechanic feel very different:
-          </p>
-          <ul>
-            <li><strong>Light frames</strong> lean farther and look close to face-planting; stagger durations are shorter and they snap back into motion more quickly.</li>
-            <li><strong>Heavy/assault frames</strong> barely move their upper bodies but end up in exaggerated brace stances; once committed to stagger they spend longer there.</li>
-          </ul>
-          <p>
-            Knockdowns sit on top of this, but the bar to hit one is deliberately high:
-          </p>
-          <ul>
-            <li>You typically need a <strong>large burst of stability damage</strong> in a short window (e.g., a point-blank explosive + a bad landing + pre-existing high stability).</li>
-            <li>Environmental events—building collapses, bridge failures, cliff falls—use the same stability logic but apply big, rare spikes.</li>
-            <li>When a full knockdown happens, it lasts around five seconds and carries heavy audiovisual treatment; it is meant to be the consequence of a serious chain of mistakes or a rare "super-weapon" effect, not a routine zoning tool.</li>
-          </ul>
-          <p>
-            Under the hood this is just a finite-state machine stepping through:
-          </p>
-          <blockquote>
-            Safe → Warning → Critical → Staggered → Recovering → (rarely) Knocked Down
-          </blockquote>
-          <p>
-            The ECS layer treats this as another bit of per-entity state. The physics stagger system is the policy that says which animations, camera behaviors, and ability gates should be active for each range.
-          </p>
-
-          <hr>
-
-          <h3>Chains, immunity, and why you can't be juggled forever</h3>
-          <p>
-            Once you introduce a visible stability bar and a satisfying stagger pose, players will try to chain it. That is a design goal. The other goal is making sure they can't do it forever.
-          </p>
-          <p>
-            PHALANX uses a simple <strong>stagger chain system</strong>:
-          </p>
-
           <figure>
-            <figcaption><strong>Table 2: Stagger chains</strong></figcaption>
+            <figcaption><strong>Table 2: Leg-type multipliers</strong></figcaption>
             <table>
               <thead>
-              <tr>
-                <th>Chain #</th>
-                <th>Time Window (since last stagger)</th>
-                <th>Visual Effect</th>
-                <th>Duration Modifier</th>
-              </tr>
+                <tr>
+                  <th>Leg Type</th>
+                  <th>Threshold Multiplier</th>
+                </tr>
               </thead>
               <tbody>
-              <tr>
-                <td>1st</td>
-                <td>Base</td>
-                <td>Yellow outline</td>
-                <td>1.0×</td>
-              </tr>
-              <tr>
-                <td>2nd</td>
-                <td>Within 10 s</td>
-                <td>Orange outline</td>
-                <td>1.2×</td>
-              </tr>
-              <tr>
-                <td>3rd</td>
-                <td>Within 10 s</td>
-                <td>Red outline + "VULNERABLE" tag</td>
-                <td>1.5×</td>
-              </tr>
-              <tr>
-                <td>Immune</td>
-                <td>After 3rd</td>
-                <td>Blue shield effect</td>
-                <td>5 s immunity</td>
-              </tr>
+                <tr>
+                  <td>Bipedal</td>
+                  <td>1.00×</td>
+                </tr>
+                <tr>
+                  <td>Reverse-joint</td>
+                  <td>0.85×</td>
+                </tr>
+                <tr>
+                  <td>Hover</td>
+                  <td>0.75×</td>
+                </tr>
+                <tr>
+                  <td>Tank treads</td>
+                  <td>1.20×</td>
+                </tr>
+                <tr>
+                  <td>Quadruped</td>
+                  <td>1.40×</td>
+                </tr>
+                <tr>
+                  <td>Multi-leg</td>
+                  <td>1.60×</td>
+                </tr>
               </tbody>
             </table>
           </figure>
+          <p>
+            The resulting <strong>effective stability threshold</strong> is computed once per build:
+          </p>
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">stability_threshold.h (conceptual)</p>
+            <pre class="article-code-text cpp">float base   = ClassBaseThreshold(mech.class);      // 30 / 50 / 70 / 90
+float mult   = LegStabilityMultiplier(mech.legs);    // e.g. 0.75 for hover
+float raw    = std::round(base * mult);
+int   eff    = std::clamp((int)raw, 15, 135);        // hard floor / cap
 
+mech.effective_stability = eff;</pre>
+          </div>
           <p>
-            This does three things at once:
-          </p>
-          <ul>
-            <li><strong>Rewards focused follow-up.</strong><br>
-              If you stagger someone and coordinate a second, well-timed burst, you get a longer punish window on the 2nd and 3rd staggers.</li>
-            <li><strong>Caps the worst-case lockout.</strong><br>
-              After the 3rd stagger in the chain, the target gets a short <strong>stagger immunity window</strong>. Stability can still be damaged, but the system will not enter the full stagger pose again until that immunity expires. There is also a hard cap on total staggered time within a recent window.</li>
-            <li><strong>Keeps it legible.</strong><br>
-              Each chain stage has a distinct outline color and HUD treatment. If you are about to hit a "red outline, VULNERABLE" target, you know exactly what you're buying. If you see a blue immunity shield, you know further stagger attempts are just wasting uptime.</li>
-          </ul>
-          <p>
-            In practice: you can absolutely bully a mech that keeps peeking at 80%+ stability into a couple of nasty staggers. You cannot set up a 30-second unplayable juggle just because your aim is good.
-          </p>
-
-          <hr>
-
-          <h3>Environment and physics hooks</h3>
-          <p>
-            Stability is not just a number that weapons push on. The environment gets a vote.
-          </p>
-          <p>
-            One of the early failures in prototyping was treating "getting hit by a railgun" and "landing badly on a wet hillside" as distinct code paths. They are not; they are both impulses that push you away from your center of mass. The stability system is easier to reason about if everything that can topple you speaks the same language: <em>stability damage per event</em>, plus a small set of modifiers.
-          </p>
-          <p>
-            The engine exposes three main inputs into stability from the world:
-          </p>
-          <ul>
-            <li><strong>Terrain slope and footing</strong></li>
-            <li><strong>Impact vector and speed</strong></li>
-            <li><strong>Surface conditions (wet, loose, unstable)</strong></li>
-          </ul>
-          <p>
-            Each of these is aggressively bounded. You should feel the difference between a dry city street and a muddy hill without ever thinking "the game rolled a d20 and I lost."
+            That value is cached and treated as another budget alongside armor, heat capacity, and mobility. A hover Light might end up with an effective threshold in the mid-20s; an Assault quadruped pushes into triple digits, but is still forced to respect the global 135-point ceiling.
           </p>
 
-          <h4>Terrain and slope</h4>
+          <h4>Stability damage is tiered, not free-form</h4>
           <p>
-            The simplest modifier is slope. The rule of thumb:
+            Weapons and major physical events don’t pick arbitrary stability numbers. They choose from a fixed table of tiers per hit or per volley:
           </p>
           <ul>
-            <li>Walking on flat ground: no modifier.</li>
-            <li>Gentle incline: tiny background stability drain, more noticeable for overweight mechs.</li>
-            <li>Steep slope: you are effectively <strong>pre-spending</strong> some of your stability budget just to remain upright.</li>
+            <li>Energy E1–E4: 5 / 10 / 15 / 20 stability.</li>
+            <li>Ballistic B1–B3: 10 / 20 / 30 stability.</li>
+            <li>Missile M1–M3: 20 / 40 / 60 stability per full volley.</li>
+            <li>Melee ML1–ML2: 30 / 50 stability.</li>
+            <li>Special / environmental events like charge attacks, building collapse, or long falls use fixed values in the 60–100 range.</li>
           </ul>
           <p>
-            In code, slope becomes a scalar:
-          </p>
-          <ul>
-            <li>Compute the <strong>slope angle</strong> at your feet.</li>
-            <li>Look up a <strong>slope coefficient</strong> in a small curve:
-              <ul>
-                <li>0–10° → 0×</li>
-                <li>10–20° → up to +10% stability damage</li>
-                <li>20–30° → up to +25%</li>
-                <li>30°+ → heavily discouraged; just moving adds a small stability trickle every second</li>
-              </ul>
-            </li>
-          </ul>
-          <p>
-            The direction of impacts matters too. Running <strong>downhill into incoming fire</strong> is much riskier than backing slowly up the same slope; the impact helper takes the surface normal into account when computing effective stability damage.
-          </p>
-
-          <h4>Impact vector and movement speed</h4>
-          <p>
-            Weapon hits and collisions both go through a helper that maps "how hard did we hit" to a stability impulse:
-          </p>
-          <ul>
-            <li>Inputs:
-              <ul>
-                <li>Relative velocity at impact</li>
-                <li>Mass of attacker and target</li>
-                <li>Impact direction vs mech's facing</li>
-              </ul>
-            </li>
-            <li>Output:
-              <ul>
-                <li>A stability delta in points</li>
-              </ul>
-            </li>
-          </ul>
-          <p>
-            Side impacts and hits from behind get a modest bonus; frontal hits are slightly more forgiving. The goal isn't strict physical accuracy; it's rewarding reasonable positioning:
-          </p>
-          <ul>
-            <li>If you are <strong>broadside to a heavy cannon</strong> at 80% stability, you're volunteering to stagger.</li>
-            <li>If you take the same shot on the nose with fresh stability, you'll feel it, but probably won't tip over.</li>
-          </ul>
-          <p>
-            Movement is treated similarly. Hard landings, mis-timed dashes, and "I tried to stop in time" events add stability damage proportional to entry speed, capped per class. Assault mechs can afford to land harder; light frames need more respect for drop angles.
-          </p>
-
-          <h4>Surface conditions</h4>
-          <p>
-            Weather and surface properties are additive, not dominant. A wet metal catwalk over a refinery should be scary—but not coin-flip random.
-          </p>
-          <p>
-            Surface condition is a small multiplier on top of everything else:
-          </p>
-          <ul>
-            <li>Normal ground: 1.0×</li>
-            <li>Loose sand, gravel: 1.1×</li>
-            <li>Wet / oily metal: 1.15×</li>
-            <li>Ice-equivalent surfaces (rare, heavily telegraphed): 1.25×</li>
-          </ul>
-          <p>
-            These modifiers apply both to:
-          </p>
-          <ul>
-            <li><strong>Self-induced</strong> stability events: sliding, braking, bad landings.</li>
-            <li><strong>Incoming</strong> events: getting hit while already on that surface.</li>
-          </ul>
-          <p>
-            They are also visible. Low-traction surfaces have a clear visual language—reflective sheen, blowing sand, distinct color grading—so you can see the extra risk. If you sprint an already-shaky mech across a rain-slick catwalk under fire, that is not the system ambushing you; that is you cashing in your stability budget at a premium.
+            That makes posture tuning a table edit instead of a per-weapon negotiation: changing “how staggery” a ballistic suite feels is usually a single tier change, not another bespoke rule.
           </p>
 
           <hr>
 
-          <h3>Abilities, heat, and the stability bar</h3>
+          <h3>What players see: the stability bar</h3>
           <p>
-            On paper, the stability system could have remained a pure physics-and-weapons mechanic. In practice, the interesting behaviors appear once it interacts with <strong>abilities</strong> and <strong>heat</strong>.
-          </p>
-          <p>
-            Abilities in PHALANX live in a table-driven system. Among other fields, each entry carries:
+            The HUD never shows the raw threshold. It shows a normalized bar from 0–100% with a few consistent cues:
           </p>
           <ul>
-            <li>Energy cost</li>
-            <li>Heat cost</li>
-            <li>Cooldown</li>
-            <li>Stability flags:
+            <li><strong>Class-colored strip</strong> with a tick mark at the mech’s effective stability threshold.</li>
+            <li><strong>Color bands</strong> that encode risk:
               <ul>
-                <li>Usable while soft-staggered?</li>
-                <li>Consumes stability?</li>
-                <li>Restores stability?</li>
-                <li>Locks stability regen briefly?</li>
+                <li>0–30%: green – stable.</li>
+                <li>30–60%: yellow – you’re spending posture.</li>
+                <li>60–85%: orange – significantly unstable.</li>
+                <li>85–99%: red – any serious hit can tip you.</li>
+              </ul>
+            </li>
+            <li><strong>Temporal cues</strong> on big hits:
+              <ul>
+                <li>Instant fill on local client when stability is applied.</li>
+                <li>Short white flash when crossing the stagger threshold.</li>
+                <li>Subtle overshoot and settle animation when you enter Soft Stagger.</li>
               </ul>
             </li>
           </ul>
           <p>
-            That gives us three especially useful patterns.
-          </p>
-
-          <h4>1. Posture reset tools</h4>
-          <p>
-            Some abilities are explicitly designed to let you push back against the stability system. A generic example:
-          </p>
-          <blockquote>
-            <strong>Recenter</strong><br>
-            Cost: moderate energy, moderate cooldown<br>
-            Effect:<br>
-            – Immediately halts passive stability decay<br>
-            – Applies a sharp, short <strong>stability reduction</strong> (e.g., −30 points)<br>
-            – Locks stability regen for 1 second (no free double-dip)<br>
-            – Flagged as <strong>usable in soft stagger</strong>, but not in hard stagger
-          </blockquote>
-          <p>
-            The net effect:
-          </p>
-          <ul>
-            <li>If you're disciplined and hit Recenter in Stage 3–4 ("active balancing" / "critical instability"), you can peel yourself back into a safer band and avoid a full stagger.</li>
-            <li>If you wait until you're already in a full stagger, it's too late; the system will not let you erase the punish window you just earned.</li>
-          </ul>
-          <p>
-            Design-wise, Recenter is the canonical example of "trade energy and a cooldown for a chunk of stability, on your terms."
-          </p>
-
-          <h4>2. High-commit burst abilities</h4>
-          <p>
-            Other abilities deliberately <strong>spend stability</strong> as part of their effect. Heavy recoil shots, mobility lunges, or overloaded melee swings are written as:
-          </p>
-          <ul>
-            <li>Apply damage / movement effect.</li>
-            <li>Apply:
-              <ul>
-                <li>Immediate stability damage to the <strong>target</strong>.</li>
-                <li>Smaller, but non-zero stability damage to <strong>the caster</strong>.</li>
-              </ul>
-            </li>
-          </ul>
-          <p>
-            Light frames, with their low thresholds, feel this immediately. If you keep chaining high-commit lunges at 80%+ stability to chase a kill, you will drag yourself into stagger as surely as your target. Assault frames can get away with this more often, but their slower recovery punishes them more if they misjudge.
-          </p>
-          <p>
-            Because everything is table-driven, designers can do this without inventing new subsystems. The stability column for an ability is just another explicit budget entry, next to heat and energy.
-          </p>
-
-          <h4>3. Heat as a stability tax</h4>
-          <p>
-            Heat is already its own system, with damage, shutdown, and visual effects. Stability borrows just enough of it to create a simple rule:
-          </p>
-          <ul>
-            <li>At <strong>low to moderate heat</strong>, stability regen is normal.</li>
-            <li>In a <strong>high-heat band</strong>, stability regen slows or pauses.</li>
-            <li>At <strong>critical heat</strong>, some classes become more vulnerable to stability damage.</li>
-          </ul>
-          <p>
-            The actual numbers can be conservative; we don't need huge multipliers to make this meaningful. What matters is that a mech sitting at 95% heat and 70% stability is in an intentionally dangerous regime:
-          </p>
-          <ul>
-            <li>One more bad trade → stagger or knockdown.</li>
-            <li>One more greedy ability → overheat and lose weapons.</li>
-          </ul>
-          <p>
-            This matches the overall budget philosophy: fights in PHALANX are not about one bar you keep full. They're about balancing several related budgets—health, heat, energy, stability—and deciding which one you're willing to burn to win a particular interaction.
+            The goal is that “70% stability” always means “you are in a high-risk band” while retaining class identity. A Light at 70% is on the edge of tipping. An Assault at 70% is still pre-stagger, but very much on notice.
           </p>
 
           <hr>
 
-          <h3>Failure modes and guardrails</h3>
+          <h3>Soft Stagger: posture, not a full stun</h3>
           <p>
-            If all we did was connect weapons, environment, abilities, and heat to the stability bar, we'd have a nice unified system that is also very capable of producing degenerate behavior.
+            Most of the system lives in Soft Stagger, not in hard disables.
           </p>
           <p>
-            Most of the guardrails exist to prevent three specific failure modes:
-          </p>
-          <ul>
-            <li><strong>Perma-stagger chains</strong></li>
-            <li><strong>Invisible death spirals</strong></li>
-            <li><strong>Visual saturation</strong></li>
-          </ul>
-
-          <h4>1. Perma-stagger chains</h4>
-          <p>
-            The stagger chain table already hints at the main mitigation: hard caps.
-          </p>
-          <ul>
-            <li>Maximum stagger chain within a single engagement: three.</li>
-            <li>Forced <strong>immunity window</strong> after the third stagger.</li>
-            <li>Hard limit on aggregate stagger time over a short horizon (you cannot spend half the last 30 seconds in hard stagger).</li>
-          </ul>
-          <p>
-            From a player's point of view, this feels like:
-          </p>
-          <ul>
-            <li>The first stagger is a warning: "You over-extended."</li>
-            <li>The second is a punish: "You did it again."</li>
-            <li>The third is a hard lesson: "You are out of position and your opponents are coordinating."</li>
-            <li>After that, the game steps in and says: "That's enough; if they want more, they have to go through your health bar instead of your control."</li>
-          </ul>
-
-          <h4>2. Invisible death spirals</h4>
-          <p>
-            Stability is the sort of mechanic that, if left opaque, can quietly shove you from "I'm fine" to "I can't play for four seconds" without you understanding why. The combat feedback design leans hard against that outcome.
-          </p>
-          <p>
-            The short list of protections:
-          </p>
-          <ul>
-            <li><strong>UI always shows absolute state.</strong><br>
-              You can always see both your current stability and your class threshold. No hidden penalties.</li>
-            <li><strong>Pre-stagger stages are loud.</strong><br>
-              Camera, animation, and audio effects escalate in a predictable way as you move through warning bands. If you're in Stage 4–5 and keep pushing, you're doing it with your eyes open.</li>
-            <li><strong>State transitions are chunked and named.</strong><br>
-              Soft stagger vs hard stagger vs knockdown are distinct, labeled states, not "a bit more wobble." The system is explicit about which one you're in, how long it will last, and what you can still do.</li>
-          </ul>
-          <p>
-            Combined with deterministic thresholds, you end up with a system that can be harsh but is rarely mysterious.
+            Mechanically, a mech enters Soft Stagger when its current stability is greater than or equal to its effective stability threshold. The value is clamped to that threshold and a class-specific timer begins.
           </p>
 
-          <h4>3. Visual saturation</h4>
+          <h4>Durations and penalties</h4>
           <p>
-            The last failure mode is subtler. If the stability system is always screaming at you—all bars pulsing, every mech in permanent screen shake—you stop seeing it.
-          </p>
-          <p>
-            A few specific caps prevent that:
+            Base Soft Stagger durations are:
           </p>
           <ul>
-            <li>Only a subset of class-based warning effects can be active at once. If heat and stability are both in critical bands, they coordinate visuals instead of stacking into a mess.</li>
-            <li>Spectator and kill-cam views flatten some of the more aggressive motion while keeping the bar and outline cues; you can see <em>what</em> happened without inheriting the full first-person trauma.</li>
-            <li>In dense fights, the system prioritizes <strong>your mech</strong> and <strong>your current target</strong> for high-intensity cues; everything else gets a toned-down variant.</li>
+            <li>Light – 2.0 s</li>
+            <li>Medium – 2.5 s</li>
+            <li>Heavy – 3.0 s</li>
+            <li>Assault – 3.0 s</li>
           </ul>
           <p>
-            From the stability system's perspective, these are presentation details. From the player's perspective, they are the difference between "I can track the fight" and "I'm trying to read my instruments through a fireworks show."
+            While in Soft Stagger:
+          </p>
+          <ul>
+            <li>Movement speed is multiplied by 0.5 (−50%).</li>
+            <li>Turn rate is reduced by ~40%.</li>
+            <li>Weapon accuracy suffers a ~30% penalty via wider cones / added sway.</li>
+            <li>All abilities that are already cooling down have +3.0 s added to their remaining cooldown.</li>
+            <li>Most ability casts are disabled unless explicitly flagged as “usable in Soft Stagger.”</li>
+            <li>Stability regeneration is frozen until the stagger window (including any extensions) fully completes.</li>
+          </ul>
+          <p>
+            You can still move, turn, and fire. The system is not removing your agency; it’s halving your ability to execute precision moves while broadcasting to everyone that you’re off-balance.
+          </p>
+
+          <h4>Extending stagger without letting it run away</h4>
+          <p>
+            Follow-up hits during Soft Stagger can extend the punish window, but in controlled steps:
+          </p>
+          <ol>
+            <li>Track total stability damage dealt <em>while</em> in Soft Stagger (<code>D_stagger</code>).</li>
+            <li>Compute <code>segments = floor(D_stagger / 25)</code>.</li>
+            <li>Each segment adds 0.5 s to the base duration.</li>
+            <li>Clamp the total Soft Stagger time to a maximum of 5.0 s.</li>
+          </ol>
+          <p>
+            That gives attackers a reason to follow up intelligently—stacked volleys and coordinated burst extend the window—without ever allowing infinite lockouts. It also keeps balance work focused on tier tables instead of bespoke caps per weapon.
+          </p>
+
+          <h4>Movement penalty stacking</h4>
+          <p>
+            Soft Stagger is just one contributor to movement penalties. The actual speed multiplier is:
+          </p>
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">movement.h (conceptual)</p>
+            <pre class="article-code-text cpp">float final_speed_mult =
+  std::max(0.25f,
+           base_speed_mult *
+           weight_mult *
+           heat_mult *
+           energy_mult *
+           stagger_mult *
+           other_mults);</pre>
+          </div>
+          <p>
+            As long as you are not in Hard Knockdown or Heat Shutdown, the engine enforces a 0.25 floor on movement speed. Even in worst-case soft-control stacks (overweight, high heat, energy penalties, stagger), you still move at 25% of your nominal speed instead of being frozen in place.
           </p>
 
           <hr>
 
-          <h3>Putting it together: one greedy peek</h3>
+          <h3>Chains, immunity, and why you can’t be juggled forever</h3>
           <p>
-            To make this concrete, consider a simple lane scenario.
+            If you expose a posture bar and a strong stagger pose, players will try to chain it. The stagger chain system is designed so that:
           </p>
           <ul>
-            <li>You are piloting a <strong>medium mech</strong>.</li>
-            <li>You've just won a trade at a corner:
+            <li>Good focus fire is rewarded.</li>
+            <li>Repeated mistakes are punished.</li>
+            <li>Infinite chains are structurally impossible.</li>
+          </ul>
+
+          <figure>
+            <figcaption><strong>Table 3: Stagger chain behavior</strong></figcaption>
+            <table>
+              <thead>
+                <tr>
+                  <th>Chain #</th>
+                  <th>Time Window</th>
+                  <th>Visual Treatment</th>
+                  <th>Duration Multiplier</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>1st</td>
+                  <td>Baseline</td>
+                  <td>Yellow outline</td>
+                  <td>1.0×</td>
+                </tr>
+                <tr>
+                  <td>2nd</td>
+                  <td>Within 10 s of previous</td>
+                  <td>Orange outline</td>
+                  <td>1.2×</td>
+                </tr>
+                <tr>
+                  <td>3rd</td>
+                  <td>Within 10 s of previous</td>
+                  <td>Red outline + “VULNERABLE” tag</td>
+                  <td>1.5×</td>
+                </tr>
+                <tr>
+                  <td>Immune</td>
+                  <td>After 3rd in chain</td>
+                  <td>Blue shield effect</td>
+                  <td>5 s stagger immunity</td>
+                </tr>
+              </tbody>
+            </table>
+          </figure>
+          <p>
+            After the third stagger within the rolling window, the target gains a short stagger immunity. Stability can still be damaged, but the mech will not re-enter Soft Stagger until the immunity expires and the global caps on stagger time are respected.
+          </p>
+          <p>
+            From a player’s point of view: you can absolutely bully someone who keeps peeking into high instability, but you cannot delete an entire fight behind a perma-stagger loop.
+          </p>
+
+          <hr>
+
+          <h3>Hard Knockdown: rare, expensive, and loud</h3>
+          <p>
+            Full knockdowns are reserved for a small set of tagged sources:
+          </p>
+          <ul>
+            <li>Specific high-impact abilities (large cooldowns, ultimate slots).</li>
+            <li>Major environmental events such as building collapses or bridge failures.</li>
+            <li>Long falls above a configured height threshold.</li>
+          </ul>
+          <p>
+            Defaults:
+          </p>
+          <ul>
+            <li>Light – ~3.0 s on the ground.</li>
+            <li>Medium – ~4.0 s.</li>
+            <li>Heavy / Assault – ~5.0 s.</li>
+          </ul>
+          <p>
+            While knocked down:
+          </p>
+          <ul>
+            <li>Movement is zero; the usual 0.25 floor is ignored.</li>
+            <li>Aim and ability usage are locked.</li>
+            <li>On impact, stability is reset to 0; after recovery, regeneration resumes under the standard rules.</li>
+          </ul>
+          <p>
+            If Hard Knockdown overlaps with Heat Shutdown, the system uses the longer of the two timers instead of stacking them. That caps total full-control lockout in normal play.
+          </p>
+
+          <hr>
+
+          <h3>Environment, components, and heat</h3>
+          <p>
+            Stability doesn’t live in a vacuum. Other systems nudge thresholds and durations instead of inventing new control states.
+          </p>
+
+          <h4>Weather and terrain</h4>
+          <p>
+            Biomes apply bounded modifiers to thresholds and stagger duration:
+          </p>
+          <ul>
+            <li>Rain can slightly reduce effective thresholds and lengthen slides.</li>
+            <li>High winds tilt thresholds against lighter mechs more than heavies.</li>
+            <li>Extreme low-traction surfaces (ice-equivalent) add modest multipliers to stability damage and are heavily telegraphed.</li>
+          </ul>
+          <p>
+            Falls use the same tiering approach as weapons: small hops are free, mid-height drops add modest stability damage, and only large falls cross into knockdown territory.
+          </p>
+
+          <h4>Component damage</h4>
+          <p>
+            Certain components directly affect stability:
+          </p>
+          <ul>
+            <li>Damaged legs progressively reduce thresholds and eventually force a knockdown if destroyed.</li>
+            <li>Gyro damage subtracts a larger flat amount, making all future posture hits more dangerous.</li>
+          </ul>
+          <p>
+            The visual side mirrors the mechanics: limping, stance changes, and visible gyro strain are all tied to those same thresholds rather than a separate “flavor” system.
+          </p>
+
+          <h4>Heat as a posture tax</h4>
+          <p>
+            Heat is its own axis, but it feeds into stability via simple rules:
+          </p>
+          <ul>
+            <li>Moderate heat bands slightly lower thresholds and add a small amount to stagger duration.</li>
+            <li>Critical heat sharply reduces thresholds and extends stagger times by up to ~1 second.</li>
+            <li>Heat Shutdown is treated as a hard control state equivalent to a knockdown; stability regen is paused until systems recover.</li>
+          </ul>
+          <p>
+            The net effect: a mech sitting in a high-heat band at 70%+ stability is in a deliberately risky posture, even if its HP bar still looks healthy.
+          </p>
+
+          <hr>
+
+          <h3>Abilities and stability: posture as a resource</h3>
+          <p>
+            In the ability system, stability is just another column in the table next to energy, heat, and cooldown. Each ability declares:
+          </p>
+          <ul>
+            <li>Whether it can be used during Soft Stagger.</li>
+            <li>Whether it consumes stability, restores stability, or temporarily locks stability regen.</li>
+            <li>How it behaves at low energy, high heat, and during shutdown.</li>
+          </ul>
+
+          <h4>Posture tools</h4>
+          <p>
+            Defensive posture abilities follow a common pattern:
+          </p>
+          <ul>
+            <li>Medium energy and heat cost.</li>
+            <li>Moderate cooldown.</li>
+            <li>Instant, explicit stability reduction (e.g., −30 points) when activated.</li>
+            <li>Short lockout where stability does not regenerate again (to prevent double-dipping).</li>
+            <li>Usable in pre-stagger warning bands, but not during hard stagger or knockdown.</li>
+          </ul>
+          <p>
+            Used early, they let you cash in resources to stay on your feet. Used late, they are simply unavailable—you already spent the budget.
+          </p>
+
+          <h4>High-commit burst</h4>
+          <p>
+            Some high-impact abilities deliberately apply stability damage to both target and caster. Heavy recoil shots, high-speed dashes, and overcharged melee swings all push on your own stability as well as the enemy’s.
+          </p>
+          <p>
+            Light frames feel that immediately: chain enough self-taxing lunges at high instability and you will topple yourself. Assaults can eat a few more of these before tipping, but their longer recovery punishes misreads harder once they do.
+          </p>
+
+          <h4>Passive posture support</h4>
+          <p>
+            Passive effects can temporarily improve stability behavior under specific conditions, such as feeding small amounts of stability regeneration while a recon mark is active and you are not currently staggered. These are tuned to be helpful but not to erase the consequences of repeatedly burning posture.
+          </p>
+
+          <hr>
+
+          <h3>Putting it together: a lane example</h3>
+          <p>
+            Consider a simple trade on a mid-range lane:
+          </p>
+          <ul>
+            <li>You’re in a <strong>medium mech</strong> (base threshold 50).</li>
+            <li>Your build uses standard bipedal legs (multiplier 1.0), so your effective stability threshold is 50.</li>
+            <li>You exit the first skirmish at:
               <ul>
-                <li>Heat: 75%</li>
-                <li>Energy: 40%</li>
-                <li>Stability: 60% (Stage 3: active balancing)</li>
+                <li>Heat: 70% (mild posture penalties, slower regen ahead).</li>
+                <li>Stability: 60% (above the midpoint band, edging into active balancing).</li>
+                <li>Energy: low, most core abilities on cooldown.</li>
               </ul>
             </li>
-            <li>The enemy <strong>assault mech</strong> is retreating around the corner at ~40% health.</li>
+            <li>The enemy Assault is retreating around a corner at ~40% HP.</li>
           </ul>
           <p>
-            You have two options.
+            You now choose between respecting the numbers or gambling against them.
           </p>
           <p>
-            <strong>Option A: Respect your stability bar.</strong>
+            <strong>Respecting stability:</strong> you hold the corner, let heat bleed off, and allow the 10 pts/s stability regen to pull you back into a safer band before you peek again. You don’t secure the immediate kill, but you keep posture intact for the next fight.
           </p>
           <p>
-            You hold cover, hit Recenter, let stability regen tick you back into Stage 2, and wait for your team to reset. The assault disappears, but you are alive and stable for the next fight.
-          </p>
-          <p>
-            <strong>Option B: Greedy peek.</strong>
-          </p>
-          <p>
-            You charge the corner with:
+            <strong>Greedy peek:</strong> you push anyway with:
           </p>
           <ul>
-            <li>High heat (slower stability regen)</li>
-            <li>Stage 3 stability (already in active balancing)</li>
-            <li>Medium-class thresholds (easier to stagger than a heavy)</li>
+            <li>High heat (threshold effectively lowered, stagger extended).</li>
+            <li>Already-elevated stability (one good volley from threshold).</li>
+            <li>No defensive posture tool off cooldown.</li>
           </ul>
           <p>
-            The assault is waiting with a short-fuse explosive and a shoulder-check ability that adds stability damage. You eat:
+            The Assault is ready with:
           </p>
           <ul>
-            <li>One explosive hit (large stability spike)</li>
-            <li>One shove (directional impact from the side)</li>
-            <li>A slope modifier from the downhill angle you just sprinted onto</li>
+            <li>A high-tier missile volley (M2 or M3 stability hit).</li>
+            <li>A short-range physical shove that applies additional posture damage.</li>
+            <li>Terrain advantage on a slight downhill slope.</li>
           </ul>
           <p>
-            The net effect:
+            You eat both; your current stability crosses 50, you enter Soft Stagger, and the follow-up during that window extends the stagger toward its upper bound. Your movement is halved, your aim is degraded, and the chain counter steps forward. The enemy team cleans up with minimal exposure.
+          </p>
+          <p>
+            From the outside this looks like a normal over-extension. Under the hood it is a deterministic posture failure: a series of trades against a finite stability budget, resolved by tables instead of ad-hoc stun logic.
+          </p>
+          <p>
+            That is the point of the system. Not a new bar for its own sake, but a way to make crowd control:
           </p>
           <ul>
-            <li>Your stability crosses the medium threshold in one burst.</li>
-            <li>You enter soft stagger, then hard stagger as the follow-up lands.</li>
-            <li>Your camera and pose broadcast that you're in a punishable state.</li>
-            <li>The enemy team cleans up the kill with minimal risk.</li>
+            <li><strong>Physics-first</strong> instead of animation-only.</li>
+            <li><strong>Deterministic</strong> and table-driven instead of fuzzy.</li>
+            <li><strong>Readable</strong> to pilots, spectators, and tools.</li>
           </ul>
           <p>
-            From a distance this looks like a normal over-extension. Under the hood, it was a stability failure: you spent too much of a finite balance on weapon recoil, heat, terrain, and bad timing, and then had nothing left when the last push came due.
+            When a mech falls over in PHALANX, the intent is that you can always say <em>which</em> budgets you burned to get there—and how you might play the next fight differently.
           </p>
-          <p>
-            That is the actual design goal for the system. Not "we invented a clever bar," but:
-          </p>
-          <blockquote>
-            When a mech falls over in PHALANX, it's because the pilot made a series of understandable, visible trades against a stability budget—and then ran out.
-          </blockquote>
         </div>
       </article>
     </section>
