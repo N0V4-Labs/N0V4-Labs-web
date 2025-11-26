@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -37,17 +38,13 @@
             Here is something that happens very reliably once you try to run a 144&nbsp;FPS mech game for real:
           </p>
           <p>
-            At the beginning, you lean on the default allocator. It seems fine. Memory graphs look noisy but
-            tolerable, frame times are mostly OK, and the occasional spike is easy to blame on "debug mode" or
-            "editor overhead."
+            At the beginning, you lean on the default allocator. It seems fine. Memory graphs look noisy but tolerable, frame times are mostly OK, and the occasional spike is easy to blame on “debug mode” or “editor overhead.”
           </p>
           <p>
-            Then you turn on full gameplay: ECS, physics, particles, replay, UI, networking. The allocator
-            becomes the hidden boss fight. Latency spikes are hard to reproduce. Fragmentation slowly increases
-            over a long match. Profiling turns into an archaeology dig through <code>operator new</code>.
+            Then you turn on full gameplay: ECS, physics, particles, replay, UI, networking. The allocator becomes the hidden boss fight. Latency spikes are hard to reproduce. Fragmentation slowly increases over a long match. Profiling turns into an archaeology dig through <code>operator new</code>.
           </p>
           <p>
-            PHALANX's memory system exists so that we do not have to live in that world.
+            PHALANX’s memory system exists so that we do not have to live in that world.
           </p>
           <p>
             It is built around a small set of ideas:
@@ -59,134 +56,241 @@
             <li>When we exceed a budget, that is a design problem, not a surprise.</li>
           </ul>
           <p>
-            The style is the same as with the ECS layer: give ourselves rules first, then write code that has
-            a chance of obeying them.
+            The style is the same as with the ECS layer: give ourselves rules first, then write code that has a chance of obeying them.
           </p>
 
           <h3>Numbers first</h3>
           <p>
-            We write down an actual budget:
-          </p>
-
-          <div class="code-block">
-<pre><code>Frame allocator (per-frame scratch):    16 MB
-Pool allocators (entities, effects):   512 MB
-General heap (assets, systems):       1536 MB
----------------------------------------------
-Total runtime memory budget:          ~2048 MB</code></pre>
-          </div>
-
-          <p>
-            The budget is not a promise about every platform on earth; it is an expectation for the machines
-            we care about.
-          </p>
-          <p>
-            From that, we get a set of operation-level targets in the same spirit as the ECS table:
-          </p>
-          <ul>
-            <li>Frame allocation: &lt;&nbsp;50&nbsp;ns</li>
-            <li>Pool allocation / free: &lt;&nbsp;60–80&nbsp;ns</li>
-            <li>Typical heap allocation: &lt;&nbsp;100&nbsp;ns for small/medium sizes</li>
-            <li>Frame reset: &lt;&nbsp;100&nbsp;ns</li>
-          </ul>
-          <p>
-            If we drift far outside of these, something is wrong. The point is not that the numbers are magic;
-            the point is that we can talk concretely about "this new system adds 0.3&nbsp;ms of allocator
-            overhead" instead of guessing.
-          </p>
-
-          <h3>A small surface: the allocator interface</h3>
-          <p>
-            Just as we do not let gameplay code talk to Flecs directly, we do not let most code talk
-            to the raw STL allocator either.
-          </p>
-          <p>
-            Instead, there is a small allocator interface in <code>phalnx::memory</code>. The intent is simple:
-          </p>
-          <ul>
-            <li>Systems accept an <code>IAllocator&amp;</code> (or a more specific allocator reference) instead of reaching for <code>new</code>.</li>
-            <li>Frame, pool, and free-list allocators all conform to the same minimal API.</li>
-            <li>If a particular strategy turns out to be wrong, we can swap it without changing every call site.</li>
-          </ul>
-          <p>
-            The interface looks roughly like this at the conceptual level:
+            We write down an actual budget. In code, that lives in <code>phalnx::memory::BudgetConfig</code> in <code>budget.h</code>:
           </p>
 
           <div class="article-code draw-left-line">
-            <p class="article-code-file mark-section">allocator.h</p>
-            <pre class="article-code-text cpp">struct IAllocator {
-  void* Allocate(std::size_t size, std::size_t alignment);
-  void  Deallocate(void* ptr, std::size_t size, std::size_t alignment);
+            <p class="article-code-file mark-section">budget.h</p>
+            <pre class="article-code-text cpp">// include/phalnx/memory/budget.h
+
+struct BudgetConfig {
+  std::size_t frame_allocator_budget = 16 * 1024 * 1024;   // 16 MB
+  std::size_t pool_allocator_budget  = 512 * 1024 * 1024;  // 512 MB
+  std::size_t heap_allocator_budget  = 1536 * 1024 * 1024; // 1.5 GB
+  std::size_t total_budget           = 2ULL * 1024 * 1024 * 1024; // 2 GB
+
+  float warning_threshold = 0.80f; // 80%
+  float error_threshold   = 0.95f; // 95%
 };</pre>
           </div>
 
           <p>
-            Typed helpers sit on top:
+            Which corresponds to:
+          </p>
+          <ul>
+            <li>Frame allocator (per-frame scratch): <strong>16&nbsp;MB</strong></li>
+            <li>Pool allocators (entities, effects): <strong>512&nbsp;MB</strong></li>
+            <li>General heap (assets, systems): <strong>1536&nbsp;MB</strong></li>
+            <li>Total runtime memory budget: <strong>≈ 2&nbsp;GB hard cap</strong></li>
+          </ul>
+          <p>
+            The budget is not a promise about every platform on earth; it is an expectation for the machines we care about.
+          </p>
+          <p>
+            From that, we get operation-level targets in the same spirit as the ECS table. They show up throughout the allocator headers:
+          </p>
+          <ul>
+            <li>Frame allocation: <strong>&lt; 50&nbsp;ns</strong> (<code>FrameAllocator</code> docs)</li>
+            <li>Pool allocation / free: <strong>&lt; 60&nbsp;ns / &lt; 80&nbsp;ns</strong> (<code>PoolAllocator</code> docs)</li>
+            <li>Typical heap allocation: <strong>&lt; 100&nbsp;ns</strong> for common sizes (<code>FreeListAllocator</code> docs)</li>
+            <li>Frame reset: <strong>~10&nbsp;ns</strong>, target well under 100&nbsp;ns (<code>FrameAllocator::Reset</code>)</li>
+            <li>Budget check: <strong>&lt; 10&nbsp;ns</strong> per frame (<code>BudgetTracker</code> docs)</li>
+          </ul>
+          <p>
+            If we drift far outside these, something is wrong. The point is not that the numbers are magic; the point is that we can say “this new system adds 0.3&nbsp;ms of allocator overhead” instead of guessing.
+          </p>
+
+          <h3>A small surface: the allocator interface</h3>
+          <p>
+            Just as we don’t let gameplay code talk to Flecs directly, we don’t let most code talk to raw <code>new</code> / <code>delete</code> either.
+          </p>
+          <p>
+            Instead there is a small allocator interface in <code>phalnx::memory</code>, defined in <code>allocator.h</code>. All of the frame, pool, and free-list allocators implement this:
           </p>
 
           <div class="article-code draw-left-line">
             <p class="article-code-file mark-section">allocator.h</p>
-            <pre class="article-code-text cpp">template &lt;typename T&gt;
-T* Allocate(IAllocator&amp; alloc) {
-  return static_cast&lt;T*&gt;(alloc.Allocate(sizeof(T), alignof(T)));
-}</pre>
+            <pre class="article-code-text cpp">// include/phalnx/memory/allocator.h
+
+namespace phalnx::memory {
+
+struct AllocationResult {
+  void*       ptr  = nullptr;  // Allocated memory or nullptr
+  std::size_t size = 0;        // Actual allocated size (&gt;= requested)
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return ptr != nullptr;
+  }
+};
+
+class IAllocator {
+ public:
+  virtual ~IAllocator() = default;
+
+  IAllocator(const IAllocator&amp;)            = delete;
+  IAllocator&amp; operator=(const IAllocator&amp;) = delete;
+  IAllocator(IAllocator&amp;&amp;)                 = delete;
+  IAllocator&amp; operator=(IAllocator&amp;&amp;)      = delete;
+
+  // Core untyped API
+  [[nodiscard]] virtual void* Allocate(
+      std::size_t size,
+      std::size_t alignment = alignof(std::max_align_t)) = 0;
+
+  virtual void Deallocate(void* ptr, std::size_t size) = 0;
+
+  [[nodiscard]] virtual bool Owns(const void* ptr) const = 0;
+
+  // Optional stats (Frame/Pool/FreeList override these)
+  [[nodiscard]] virtual std::size_t GetUsedBytes() const { return 0; }
+  [[nodiscard]] virtual std::size_t GetPeakBytes() const { return 0; }
+
+  // Typed helpers built on top of Allocate/Deallocate
+  template &lt;typename T&gt;
+  [[nodiscard]] T* New() {
+    return static_cast&lt;T*&gt;(Allocate(sizeof(T), alignof(T)));
+  }
+
+  template &lt;typename T&gt;
+  [[nodiscard]] T* NewArray(std::size_t count) {
+    return static_cast&lt;T*&gt;(Allocate(sizeof(T) * count, alignof(T)));
+  }
+
+  template &lt;typename T&gt;
+  void Delete(T* ptr) {
+    Deallocate(static_cast&lt;void*&gt;(ptr), sizeof(T));
+  }
+
+  template &lt;typename T&gt;
+  void DeleteArray(T* ptr, std::size_t count) {
+    Deallocate(static_cast&lt;void*&gt;(ptr), sizeof(T) * count);
+  }
+
+  // When the caller wants to know the actual size
+  [[nodiscard]] virtual AllocationResult AllocateResult(
+      std::size_t size,
+      std::size_t alignment = alignof(std::max_align_t)) {
+    void* ptr = Allocate(size, alignment);
+    return {ptr, ptr ? size : 0};
+  }
+
+ protected:
+  IAllocator() = default;
+};
+
+} // namespace phalnx::memory</pre>
           </div>
 
           <p>
-            There is no exception in sight. If an allocation fails, you get <code>nullptr</code> and the
-            surrounding system decides what to sacrifice. That is a deliberate pattern: error handling happens
-            at the gameplay or engine level, not buried inside an allocator.
+            There are no exceptions here. Every allocator follows the same rule: <strong>failure returns <code>nullptr</code></strong>. The surrounding system decides what to sacrifice.
           </p>
           <p>
-            The allocator interface is the memory analogue of <code>EntityManager</code>: a place to attach
-            documentation, to enforce conventions, and to keep the rest of the code from depending directly
-            on whatever allocation strategy we are using this month.
+            This interface is the memory analogue of <code>EntityManager</code>: one place to attach documentation, enforce conventions, and stop the rest of the code from depending directly on whatever allocation strategy we’re using this month.
           </p>
 
           <h3>The frame allocator: memory that evaporates on purpose</h3>
           <p>
-            A frame allocator is what you get when you admit that a large fraction of your allocations have
-            lifetimes measured in milliseconds.
+            A frame allocator is what you get when you admit that a large fraction of your allocations have lifetimes measured in milliseconds.
           </p>
           <p>
-            The implementation is the standard bump-pointer pattern:
+            In PHALANX that’s <code>phalnx::memory::FrameAllocator</code> from <code>frame_allocator.h</code>. It is a classic bump-pointer allocator:
           </p>
           <ul>
-            <li>One contiguous buffer (16&nbsp;MB by default).</li>
-            <li>One offset.</li>
-            <li><code>Allocate</code> advances the offset with alignment padding.</li>
+            <li>One contiguous buffer (<code>kDefaultFrameAllocatorCapacity = 16 * 1024 * 1024</code>).</li>
+            <li>One offset into that buffer.</li>
+            <li><code>Allocate</code> bumps the offset with alignment padding.</li>
             <li><code>Deallocate</code> is a no-op.</li>
-            <li><code>Reset</code> sets the offset back to zero at the end of the frame.</li>
+            <li><code>Reset()</code> sets the offset back to zero at the end of the frame.</li>
           </ul>
           <p>
-            Allocation is a few arithmetic instructions. Reset is effectively free.
-          </p>
-          <p>
-            The intended usage looks like this:
+            The important bits of the implementation look like this:
           </p>
 
           <div class="article-code draw-left-line">
-            <p class="article-code-file mark-section">frame_allocator.cpp</p>
-            <pre class="article-code-text cpp">void RenderFrame() {
-  auto* cmds  = frame_alloc.AllocateArray&lt;DrawCommand&gt;(1000);
-  auto* rays  = frame_alloc.AllocateArray&lt;RaycastHit&gt;(4096);
-  auto* state = frame_alloc.Allocate&lt;TemporaryState&gt;();
+            <p class="article-code-file mark-section">frame_allocator.h</p>
+            <pre class="article-code-text cpp">// include/phalnx/memory/frame_allocator.h
 
-  // ... use buffers for this frame only ...
+inline constexpr std::size_t kDefaultFrameAllocatorCapacity =
+    16 * 1024 * 1024; // 16 MB
+
+class FrameAllocator final : public IAllocator {
+ public:
+  explicit FrameAllocator(
+      std::size_t capacity = kDefaultFrameAllocatorCapacity,
+      const char* name     = "FrameAllocator");
+
+  ~FrameAllocator() override;
+
+  [[nodiscard]] void* Allocate(
+      std::size_t size,
+      std::size_t alignment = alignof(std::max_align_t)) override;
+
+  void Deallocate(void* ptr, std::size_t size) override {
+    (void)ptr;
+    (void)size;
+    // Intentional no-op; Reset() frees everything
+  }
+
+  void Reset() noexcept {
+    offset_ = 0;
+    // peak_usage_ tracked separately
+  }
+
+  [[nodiscard]] std::size_t GetUsedBytes() const override { return offset_; }
+  [[nodiscard]] std::size_t GetPeakBytes() const override { return peak_usage_; }
+
+  // ... GetCapacity(), GetFreeBytes(), etc ...
+
+ private:
+  void*        buffer_;      // 16 MB backing store (default)
+  std::size_t  capacity_;    // total bytes
+  std::size_t  offset_;      // current bump pointer
+  std::size_t  peak_usage_;  // high-water mark
+  const char*  name_;        // for Tracy
+};</pre>
+          </div>
+
+          <p>
+            The intended usage is exactly what the header comments show:
+          </p>
+
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">frame_allocator.h (usage)</p>
+            <pre class="article-code-text cpp">// Pseudocode based on frame_allocator.h docs
+
+using phalnx::memory::FrameAllocator;
+
+FrameAllocator frame_alloc;
+
+// Game loop
+while (running) {
+  auto* draw_commands =
+      frame_alloc.NewArray&lt;DrawCommand&gt;(1000);   // temporary
+  auto* query_results =
+      frame_alloc.NewArray&lt;RaycastHit&gt;(4096);    // temporary
+  auto* state =
+      frame_alloc.New&lt;TemporaryState&gt;();         // temporary
+
+  // ... use these only for this frame ...
 
   frame_alloc.Reset();  // all of the above is now invalid
 }</pre>
           </div>
 
           <p>
-            It is impossible to overemphasize the contract:
+            The contract cannot be overstated:
           </p>
           <ul>
-            <li>Anything allocated from the frame allocator dies at <code>Reset()</code>.</li>
+            <li>Anything allocated from the frame allocator <strong>dies at <code>Reset()</code></strong>.</li>
             <li>Storing those pointers into long-lived structures is undefined behavior.</li>
           </ul>
           <p>
-            The value is that any system that can be expressed in this shape becomes vastly simpler:
+            The value is that any system that fits this shape becomes vastly simpler:
           </p>
           <ul>
             <li>Physics can build temporary contact graphs, constraint lists, and query results without worrying about frees.</li>
@@ -194,32 +298,81 @@ T* Allocate(IAllocator&amp; alloc) {
             <li>ECS can build temporary views or job queues for the next phase without fragmenting anything.</li>
           </ul>
           <p>
-            The allocator is fast because it is allowed to be ruthless about lifetime.
+            The allocator is fast specifically because it is allowed to be ruthless about lifetime.
           </p>
 
           <h3>Pool allocators: bullets, minions, particles</h3>
           <p>
-            Not all lifetimes are one frame. Projectiles, minions, particles, and various kinds of gameplay
-            state live for seconds or minutes, but they share a crucial property: they are all the same size.
+            Not all lifetimes are one frame. Projectiles, minions, particles, and various gameplay state live for seconds or minutes, but they share a crucial property: each class of thing is a <strong>fixed size</strong>.
           </p>
           <p>
-            For that pattern, we use pool allocators.
-          </p>
-          <p>
-            Conceptually, each pool is:
-          </p>
-          <ul>
-            <li>A fixed-size array of slots, each big enough to hold one <code>T</code>.</li>
-            <li>An intrusive free-list stored in the slots themselves when they are free.</li>
-            <li>A simple, O(1) <code>Allocate</code>/<code>Deallocate</code> pair that manipulates the free-list head.</li>
-          </ul>
-          <p>
-            The public API looks like a thin layer over that:
+            For that pattern we use <code>PoolAllocator</code> from <code>pool_allocator.h</code>:
           </p>
 
           <div class="article-code draw-left-line">
-            <p class="article-code-file mark-section">pool_allocator.cpp</p>
-            <pre class="article-code-text cpp">PoolAllocator&lt;Projectile&gt; projectile_pool(/* capacity */, "ProjectilePool");
+            <p class="article-code-file mark-section">pool_allocator.h</p>
+            <pre class="article-code-text cpp">// include/phalnx/memory/pool_allocator.h
+
+template &lt;typename T, std::size_t Capacity&gt;
+class PoolAllocator final : public IAllocator {
+ public:
+  explicit PoolAllocator(const char* name = "PoolAllocator");
+
+  // Type-safe API
+  [[nodiscard]] T* Allocate();     // returns uninitialized slot or nullptr
+  void            Deallocate(T*);  // returns slot to pool
+
+  template &lt;typename... Args&gt;
+  [[nodiscard]] T* Construct(Args&amp;&amp;... args) {
+    T* ptr = Allocate();
+    if (!ptr) {
+      return nullptr;
+    }
+    new (ptr) T(std::forward&lt;Args&gt;(args)...);
+    return ptr;
+  }
+
+  void Destroy(T* ptr) {
+    if (!ptr) return;
+    ptr-&gt;~T();
+    Deallocate(ptr);
+  }
+
+  // IAllocator overrides (void*, size)
+  [[nodiscard]] void* Allocate(
+      std::size_t size,
+      std::size_t alignment = alignof(std::max_align_t)) override;
+
+  void Deallocate(void* ptr, std::size_t size) override;
+
+  [[nodiscard]] bool Owns(const void* ptr) const override;
+
+  [[nodiscard]] std::size_t GetUsedBytes() const override;
+  [[nodiscard]] std::size_t GetPeakBytes() const override;
+
+  // ...
+
+ private:
+  struct FreeNode { FreeNode* next; };
+
+  void*        buffer_;
+  FreeNode*    free_list_head_;
+  std::size_t  free_count_;
+  std::size_t  peak_usage_;
+  const char*  name_;
+};</pre>
+          </div>
+
+          <p>
+            The public API ends up looking like this:
+          </p>
+
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">pool_allocator.h (usage)</p>
+            <pre class="article-code-text cpp">using phalnx::memory::PoolAllocator;
+
+constexpr std::size_t kMaxProjectiles = 10'000;
+PoolAllocator&lt;Projectile, kMaxProjectiles&gt; projectile_pool("ProjectilePool");
 
 Projectile* p = projectile_pool.Construct(args...);
 if (!p) {
@@ -230,29 +383,26 @@ projectile_pool.Destroy(p);</pre>
           </div>
 
           <p>
-            Two things matter here.
+            Two things matter here:
+          </p>
+          <ol>
+            <li><strong>Failure is explicit.</strong> When the pool is exhausted, <code>Construct</code> returns <code>nullptr</code>. Nothing crashes. You can drop the oldest projectile, deny a spawn, or log and move on. The allocator does not invent behavior.</li>
+            <li><strong>Fragmentation is structurally impossible.</strong> Every slot is the same size, so every free slot is interchangeable with every other.</li>
+          </ol>
+          <p>
+            Pools force a habit that pays off later: you choose a budget per class of object.
           </p>
           <p>
-            First, the failure mode is explicit. A pool can be exhausted, and when it is, you get
-            <code>nullptr</code>. Nothing crashes. You can drop the oldest projectile, deny a spawn, or log
-            and move on. The allocator does not get to invent behavior.
-          </p>
-          <p>
-            Second, fragmentation is structurally impossible. Every slot is the same size, so every free slot
-            is interchangeable with every other.
-          </p>
-          <p>
-            From a design point of view, pools force a habit that pays off later: you choose a budget per class
-            of object. "This build supports 10k live projectiles and 2k minions," not "we hope no one brings
-            the machine to its knees with too many spawns."
+            “This build supports 10k live projectiles and 2k minions,”<br>
+            not “we hope no one brings the machine to its knees with too many spawns.”
           </p>
 
           <h3>Free-list allocator: the general heap, but predictable</h3>
           <p>
-            The third layer is the free-list allocator that backs the "1.5&nbsp;GB general heap" bucket.
+            The third layer is the free-list allocator that backs the “general heap” bucket: <code>phalnx::memory::FreeListAllocator</code> from <code>free_list_allocator.h</code> / <code>.cpp</code>.
           </p>
           <p>
-            This is for everything that does not fit the previous two patterns:
+            This is for everything that doesn’t fit the previous two patterns:
           </p>
           <ul>
             <li>Meshes, textures, and other content.</li>
@@ -260,200 +410,373 @@ projectile_pool.Destroy(p);</pre>
             <li>Scripting VMs, UI trees, and long-lived gameplay data.</li>
           </ul>
           <p>
-            Internally, the allocator uses:
+            Internally, it uses <strong>segregated free-lists</strong>:
           </p>
-          <ul>
-            <li>A set of size classes (e.g., 8&nbsp;B, 16&nbsp;B, 32&nbsp;B, … up to 128&nbsp;KB), each with its own free-list.</li>
-            <li>A fallback path for large blocks beyond that range.</li>
-            <li>Coalescing of neighbors on free, to reduce long-term fragmentation.</li>
-          </ul>
+
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">free_list_allocator.h</p>
+            <pre class="article-code-text cpp">// include/phalnx/memory/free_list_allocator.h
+
+inline constexpr std::size_t kNumSizeClasses = 16;
+inline constexpr std::size_t kMinBlockSize   = 8;
+inline constexpr std::size_t kMaxSizeClass   = 128 * 1024; // 128KB
+
+// Size Classes (16 bins, power-of-2):
+//   Class 0-7:   8B, 16B, 32B, 64B, 128B, 256B, 512B, 1KB
+//   Class 8-14:  2KB, 4KB, 8KB, 16KB, 32KB, 64KB, 128KB
+//   Class 15:    &gt;128KB (large allocation fallback)
+
+struct FreeBlock {
+  std::size_t size;  // Size of this block in bytes
+  FreeBlock*  next;  // Next block in free list
+};
+
+struct AllocHeader {
+  std::size_t size;        // Block size including header
+  std::uint8_t size_class; // Size-class index
+  std::uint8_t padding[7]; // Padding to 16B
+};
+
+inline constexpr std::size_t kAllocHeaderSize = sizeof(AllocHeader);
+
+class FreeListAllocator final : public IAllocator {
+ public:
+  explicit FreeListAllocator(
+      std::size_t heap_size = kDefaultFreeListHeapSize,
+      const char* name      = "FreeListAllocator");
+
+  ~FreeListAllocator() override;
+
+  [[nodiscard]] void* Allocate(
+      std::size_t size,
+      std::size_t alignment = alignof(std::max_align_t)) override;
+
+  void Deallocate(void* ptr, std::size_t size) override;
+
+  [[nodiscard]] const char* GetName() const override;
+  [[nodiscard]] std::size_t GetUsedBytes() const override;
+  [[nodiscard]] std::size_t GetPeakBytes() const override;
+
+  // ...
+
+ private:
+  void*                                  heap_;
+  std::size_t                            heap_size_;
+  std::size_t                            allocated_bytes_;
+  std::size_t                            peak_bytes_;
+  std::array&lt;FreeBlock*, kNumSizeClasses&gt; bins_;
+  const char*                            name_;
+};</pre>
+          </div>
+
           <p>
-            The performance goal is not "never slow down" but "behave consistently":
+            The constructor uses a heap size default of <strong>512&nbsp;MB</strong> (<code>kDefaultFreeListHeapSize</code>), and the <code>BudgetConfig</code> gives it a 1.5&nbsp;GB budget at the design level. The important part is the <em>shape</em>:
           </p>
           <ul>
             <li>Small allocations usually come from a size-class free-list in O(1).</li>
-            <li>Deallocation returns blocks to the appropriate bin and may link neighbors.</li>
-            <li>Large allocations do more bookkeeping, but they are rare and visible.</li>
+            <li>Deallocation returns blocks to the appropriate bin and may coalesce neighbors.</li>
+            <li>Larger allocations walk the overflow bin, but they are rare and visible.</li>
           </ul>
           <p>
-            The free-list allocator is allowed to be more complex because it is not in the tightest loops.
-            Whenever something shows up hot in a profile, the first fix is not to micro-optimize the heap;
-            it is to move that site onto a frame or pool allocator.
+            The free-list allocator is allowed to be more complex because it is not in the tightest loops. When something shows up hot in a profile, the fix is usually “move it to a frame or pool allocator,” not “micro-optimize the heap.”
           </p>
 
           <h3>Tracy integration: making memory visible</h3>
           <p>
-            A memory system without telemetry is like a fuzzer without coverage: you can tell that
-            <em>something</em> is happening, but you cannot tell whether it is progress.
+            A memory system without telemetry is like a fuzzer without coverage: you can tell something is happening, but you cannot tell whether it is progress.
           </p>
           <p>
-            We wire allocators into Tracy via <code>tracy_memory.h</code>. The contract is:
+            The bridge to Tracy lives in <code>tracy_memory.h</code>. At the bottom of it are the macros and helpers everyone else uses:
           </p>
-          <ul>
-            <li>Allocators call <code>PHALNX_TRACY_ALLOC(ptr, size, pool_name)</code> when they hand out memory.</li>
-            <li>They call <code>PHALNX_TRACY_FREE(ptr, pool_name)</code> when they take it back.</li>
-            <li>The macros are no-ops when Tracy is disabled.</li>
-          </ul>
+
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">tracy_memory.h</p>
+            <pre class="article-code-text cpp">// include/phalnx/profiling/tracy_memory.h
+
+#ifdef TRACY_ENABLE
+#include &lt;tracy/Tracy.hpp&gt;
+
+// Per-allocation tracking (with pool name)
+#define PHALNX_TRACY_ALLOC(ptr, size, pool_name) TracyAllocN(ptr, size, pool_name)
+#define PHALNX_TRACY_FREE(ptr, pool_name)        TracyFreeN(ptr, pool_name)
+
+// ECS zone timing
+#define ENTITY_MANAGER_ZONE_SCOPED(name) ZoneScopedN(name)
+
+#else
+
+#define PHALNX_TRACY_ALLOC(ptr, size, pool_name) ((void)0)
+#define PHALNX_TRACY_FREE(ptr, pool_name)        ((void)0)
+#define ENTITY_MANAGER_ZONE_SCOPED(name)         ((void)0)
+
+#endif</pre>
+          </div>
+
           <p>
-            On top of these primitives there are small helpers:
-          </p>
-          <ul>
-            <li><code>TrackBatchAllocation</code> / <code>UntrackBatchAllocation</code> for "one big buffer, many internal users" patterns like the frame allocator.</li>
-            <li><code>TrackedAllocation&lt;T, Allocator&gt;</code> as an RAII wrapper that allocates in the constructor, frees in the destructor, and emits the appropriate Tracy events around both.</li>
-          </ul>
-          <p>
-            This is enough to make each allocator show up as a named pool in Tracy's memory view.
-          </p>
-          <p>
-            The other half is budgets.
-          </p>
-          <p>
-            <code>MemoryBudget</code> encodes the 16&nbsp;MB / 512&nbsp;MB / 1.5&nbsp;GB / 2&nbsp;GB split and
-            the warning/critical thresholds (80% and 95%). <code>MemoryBudgetTracker</code> keeps running
-            tallies:
-          </p>
-          <ul>
-            <li>How many bytes the frame allocator is using.</li>
-            <li>How many bytes the pools are using, in aggregate.</li>
-            <li>How many bytes the general heap is using.</li>
-          </ul>
-          <p>
-            Each frame, it pushes plots to Tracy with names like:
+            On top of those, <code>phalnx::profiling</code> provides small helpers:
           </p>
           <ul>
-            <li><code>Memory/Frame</code></li>
-            <li><code>Memory/Pool</code></li>
-            <li><code>Memory/Heap</code></li>
-            <li><code>Memory/Total</code></li>
+            <li><code>TrackedAllocation&lt;T, Allocator&gt;</code>: RAII wrapper that allocates in its constructor, calls <code>PHALNX_TRACY_ALLOC</code>, and frees + <code>PHALNX_TRACY_FREE</code> in its destructor.</li>
+            <li><code>TrackBatchAllocation</code> / <code>UntrackBatchAllocation</code>: for “one big buffer, many internal users” patterns like the frame allocator.</li>
+            <li><code>TrackMemoryUsage</code>: plots allocator usage over time.</li>
           </ul>
           <p>
-            This gives you the simplest possible kind of saturation signal: if <code>Memory/Pool</code> creeps
-            up over the course of a match and never comes back down, there is a leak in or near a pool. If
-            <code>Memory/Frame</code> spikes transiently alongside a physics spike, you know exactly where to
-            look.
+            A typical RAII usage in the comments looks like:
+          </p>
+
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">tracy_memory.h (RAII usage)</p>
+            <pre class="article-code-text cpp">using phalnx::profiling::TrackedAllocation;
+
+// Projectile pool example
+PoolAllocator&lt;Projectile, 10'000&gt; projectile_pool("ProjectilePool");
+
+{
+  TrackedAllocation&lt;Projectile, decltype(projectile_pool)&gt;
+      projectile(projectile_pool, "ProjectilePool");
+  // Use *projectile here
+} // destructor frees + untracks</pre>
+          </div>
+
+          <p>
+            And batch tracking:
+          </p>
+
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">tracy_memory.h (batch tracking)</p>
+            <pre class="article-code-text cpp">void* buffer = frame_allocator.Allocate(1024 * 1024);
+phalnx::profiling::TrackBatchAllocation(buffer, 1024 * 1024, "FrameAllocator");
+
+// ... use buffer via frame allocator ...
+
+phalnx::profiling::UntrackBatchAllocation(buffer, "FrameAllocator");
+frame_allocator.Reset();</pre>
+          </div>
+
+          <p>
+            This is enough for each allocator (or bridge like <code>FlecsAllocatorBridge</code>) to show up as a named pool in Tracy’s memory view.
+          </p>
+
+          <h3>Budgets as first-class citizens</h3>
+          <p>
+            The other half of “making memory visible” is enforcing the budget from the top of the article.
+          </p>
+          <p>
+            This is handled by <code>BudgetTracker</code> in <code>budget.h</code>:
+          </p>
+
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">budget.h</p>
+            <pre class="article-code-text cpp">// include/phalnx/memory/budget.h
+
+enum class BudgetCategory : std::uint8_t {
+  kFrame = 0,
+  kPool  = 1,
+  kHeap  = 2,
+  kTotal = 3,
+  kCount = 4
+};
+
+struct BudgetAlert {
+  BudgetCategory   category;
+  AlertLevel       level;          // kWarning or kError
+  std::size_t      current_bytes;
+  std::size_t      budget_bytes;
+  float            utilization;
+  std::string_view category_name;
+  std::string_view level_name;
+};
+
+using AlertCallback = std::function&lt;void(const BudgetAlert&amp;)&gt;;
+
+class BudgetTracker {
+ public:
+  explicit BudgetTracker(const BudgetConfig&amp; config = BudgetConfig{});
+
+  void SetFrameUsage(std::size_t bytes) noexcept { frame_usage_ = bytes; }
+  void SetPoolUsage (std::size_t bytes) noexcept { pool_usage_  = bytes; }
+  void SetHeapUsage (std::size_t bytes) noexcept { heap_usage_  = bytes; }
+
+  void SetAllUsage(std::size_t frame_bytes,
+                   std::size_t pool_bytes,
+                   std::size_t heap_bytes) noexcept;
+
+  void CheckBudgets();      // compare against BudgetConfig thresholds
+  void LogToTracy() const;  // plot "Memory/Frame (MB)" etc.
+
+  void SetAlertCallback(AlertCallback cb) { alert_callback_ = std::move(cb); }
+
+ private:
+  BudgetConfig  config_;
+  std::size_t   frame_usage_;
+  std::size_t   pool_usage_;
+  std::size_t   heap_usage_;
+  AlertLevel    last_frame_level_;
+  AlertLevel    last_pool_level_;
+  AlertLevel    last_heap_level_;
+  AlertLevel    last_total_level_;
+  AlertCallback alert_callback_;
+};</pre>
+          </div>
+
+          <p>
+            The usage in the header comments is exactly how it’s meant to be wired:
+          </p>
+
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">budget.h (usage)</p>
+            <pre class="article-code-text cpp">phalnx::memory::BudgetTracker tracker;
+
+tracker.SetFrameUsage(frame_allocator.GetUsedBytes());
+tracker.SetPoolUsage(total_pool_bytes);
+tracker.SetHeapUsage(heap_allocator.GetUsedBytes());
+
+tracker.SetAlertCallback([](const BudgetAlert&amp; alert) {
+  LOG_WARNING(Memory, "Budget alert: {} at {}% ({}/{})",
+              alert.category_name,
+              static_cast&lt;int&gt;(alert.utilization * 100.0f),
+              alert.current_bytes,
+              alert.budget_bytes);
+});
+
+// Once per frame
+tracker.CheckBudgets();
+tracker.LogToTracy();</pre>
+          </div>
+
+          <p>
+            <code>LogToTracy()</code> pushes plots named:
+          </p>
+          <ul>
+            <li><code>Memory/Frame (MB)</code></li>
+            <li><code>Memory/Pool (MB)</code></li>
+            <li><code>Memory/Heap (MB)</code></li>
+            <li><code>Memory/Total (MB)</code></li>
+          </ul>
+          <p>
+            and percent versions (<code>Memory/Frame %</code>, etc). If “Memory/Pool (MB)” creeps up over a match and never comes back down, there’s a leak in or near a pool. If “Memory/Frame (MB)” spikes alongside a physics spike, you know exactly where to look.
           </p>
 
           <h3>How it is used in real systems</h3>
           <p>
-            This is all fairly abstract. It helps to look at a few concrete integration patterns that are
-            already in motion.
+            All of this is fairly abstract. It helps to look at how the pieces are intended to line up in actual subsystems. The key parts here match the existing code: <code>FrameAllocator</code>, <code>PoolAllocator</code>, <code>FreeListAllocator</code>, <code>ThreadLocalAllocators</code>, and the Flecs bridge.
           </p>
 
-          <h4>Physics: per-thread scratch with no contention</h4>
+          <h4>Physics: per-thread scratch with no allocator contention</h4>
           <p>
-            Physics is a textbook source of allocator pain. It wants to allocate lots of small, short-lived
-            structures (contacts, joints, queries) across multiple threads, every frame.
-          </p>
-          <p>
-            In PHALANX, each physics worker thread receives:
-          </p>
-          <ul>
-            <li>Its own frame allocator instance for per-step scratch.</li>
-            <li>A set of dedicated pools for recurring structures like <code>ContactPoint</code> and <code>RaycastHit</code>.</li>
-          </ul>
-          <p>
-            The "real" heap does not see any of those allocations.
-          </p>
-          <p>
-            The end result is that physics does not fight with gameplay or rendering over the general allocator,
-            and lock contention in the allocator simply does not exist. All of the thread safety work happens
-            at the physics and ECS layer, not inside <code>malloc</code>.
+            Physics wants to allocate lots of small, short-lived structures (contacts, joints, queries) across multiple threads, every frame. That’s exactly what the frame allocator and the thread-local wrapper in <code>thread_local_allocators.h</code> are for:
           </p>
 
-          <h4>Stagger: pre-allocating the worst-case spikes</h4>
+          <div class="article-code draw-left-line">
+            <p class="article-code-file mark-section">thread_local_allocators.h</p>
+            <pre class="article-code-text cpp">// include/phalnx/memory/thread_local_allocators.h (conceptual)
+
+class ThreadLocalAllocators {
+ public:
+  static void Initialize();
+  static void Shutdown();
+
+  [[nodiscard]] static void* Allocate(
+      std::size_t size,
+      std::size_t alignment = 16);
+
+  static void Deallocate(void* ptr, std::size_t size);
+
+  // Internally:
+  // - each thread gets a FrameAllocator of kFrameAllocatorSize (4 MB)
+  // - allocations &lt;= kMaxThreadLocalSize (256 bytes) go here
+};</pre>
+          </div>
+
           <p>
-            Stagger and knockback effects are another pattern: nothing happens for a while, and then a lot
-            happens at once.
-          </p>
-          <p>
-            The plan there is:
+            The pattern for something like a physics worker is:
           </p>
           <ul>
-            <li>Size a dedicated pool for the worst realistic case: all mechs staggered at once, plus safety margin.</li>
-            <li>Use it as a double-buffered resource: one half for this frame, one half for the next.</li>
-            <li>Reset the inactive half in O(1) at the frame boundary, instead of individually freeing events.</li>
+            <li>Use per-thread frame allocators (via <code>ThreadLocalAllocators</code> or direct <code>FrameAllocator</code>) for short-lived scratch.</li>
+            <li>Use <code>PoolAllocator</code> for recurring structures like <code>ContactPoint</code> and <code>RaycastHit</code>.</li>
+            <li>Avoid the general heap (<code>FreeListAllocator</code>) entirely inside the tight simulation loops.</li>
           </ul>
           <p>
-            The reason to do this is not subtle performance wins; it is avoiding a very specific failure mode:
-            "rare but huge bursts of allocations that fragment the heap and randomly blow the frame budget."
+            The result is that physics doesn’t fight with gameplay or rendering over a shared heap, and allocator lock contention is engineered out instead of fought later.
+          </p>
+
+          <h4>Stagger: pre-allocating worst-case spikes</h4>
+          <p>
+            Stagger and knockback are another pattern: nothing happens for a while, then a lot happens at once.
+          </p>
+          <p>
+            The design there is:
+          </p>
+          <ul>
+            <li>Size a dedicated <code>PoolAllocator</code> for the worst realistic case (all mechs staggered at once, plus margin).</li>
+            <li>Treat it as a double-buffered resource: one side for “this frame’s staggering events”, one side for “next frame”.</li>
+            <li>Reset or reuse the inactive half in O(1), instead of individually freeing events one by one.</li>
+          </ul>
+          <p>
+            The goal is not subtle micro-optimizations; it is avoiding a specific failure mode: “rare but huge bursts of allocations that fragment the heap and randomly blow the frame budget.”
           </p>
 
           <h4>ECS and memory lining up</h4>
           <p>
-            The ECS blog laid out targets like "20k-entity pass in &lt;1&nbsp;ms" and
-            "<code>AddComponent</code> under 500&nbsp;ns".
+            The ECS post laid out targets like “20k-entity pass in &lt; 1&nbsp;ms” and “<code>AddComponent</code> under 500&nbsp;ns”.
           </p>
           <p>
-            The memory system is designed to support those:
+            The memory system is built to support those:
           </p>
           <ul>
-            <li>Archetype tables and component arrays live in pools, not the general heap.</li>
-            <li>Transient ECS views or staging structures use the frame allocator.</li>
-            <li>Long-lived metadata (component registries, introspection, tooling) sits on the free-list heap.</li>
+            <li>Archetype tables and component arrays sit on pools (or Flecs-directed pools via <code>SizeClassPoolAllocator</code> and <code>SmallBlockPoolAllocator</code> through <code>FlecsAllocatorBridge</code>), not the general heap.</li>
+            <li>Transient ECS views or staging structures use the frame allocator (either directly or through thread-local wrappers).</li>
+            <li>Long-lived metadata (component registries, introspection, tooling) goes onto the free-list heap.</li>
           </ul>
           <p>
-            This keeps the fast ECS paths away from the allocator machinery that has to handle arbitrary sizes
-            and try to fight fragmentation.
+            That keeps the fast ECS paths away from the part of the allocator machinery that has to deal with arbitrary sizes and fragmentation.
           </p>
 
           <h3>Rules we actually rely on</h3>
           <p>
-            Most of the interesting behavior does not come from clever data structures; it comes from boring
-            rules that are obeyed consistently.
-          </p>
-          <p>
-            A few of them:
+            Most of the interesting behavior doesn’t come from clever data structures; it comes from boring rules, obeyed consistently. The headers spell them out:
           </p>
           <p>
             <strong>1. Do not throw from allocators.</strong>
-            All error paths return <code>nullptr</code>. If a pool is exhausted or a budget is exceeded, the
-            allocator reports the fact; it does not invent a recovery story.
+            All error paths return <code>nullptr</code>. If a pool is exhausted or a budget is exceeded, the allocator reports the fact; it does not invent a recovery story.
           </p>
           <p>
             <strong>2. Do not keep frame allocations past <code>Reset()</code>.</strong>
-            Any API that takes a frame allocator makes that explicit. The documentation points out that storing
-            those pointers is undefined behavior. This matches how things like <code>std::string_view</code>
-            are documented: the lifetime is on you.
+            <code>FrameAllocator</code>’s documentation is explicit: everything allocated through it becomes invalid when <code>Reset()</code> is called. Storing those pointers is undefined behavior.
           </p>
           <p>
             <strong>3. Pool exhaustion is a gameplay problem.</strong>
-            When a pool is full, something in design has to give: fewer projectiles, capped minion waves, or
-            degraded visuals. This is intentional; it prevents silent heap growth under load.
+            When a <code>PoolAllocator</code> is full, <code>Construct</code> returns <code>nullptr</code>. Design has to give: fewer projectiles, capped minion waves, or degraded visuals. That prevents “silent” heap growth under load.
           </p>
           <p>
             <strong>4. Alignment is explicit.</strong>
-            Every allocator API takes an alignment parameter. Passing a non-power-of-two is a debug-time error.
-            This prevents "some platforms break when we turn on AVX" class bugs from hiding inside the allocator.
+            The core <code>IAllocator::Allocate</code> API takes an alignment parameter. Passing a non–power-of-two value triggers a debug assertion in <code>IsPowerOfTwo</code>. That keeps “this only breaks when we enable AVX” class bugs from hiding inside the allocator.
           </p>
           <p>
             <strong>5. Telemetry is not optional in development.</strong>
-            The Tracy hooks are compiled out in shipping builds, but development and test builds are expected
-            to run with them on. Memory without graphs is just vibes.
+            The Tracy hooks (<code>PHALNX_TRACY_ALLOC</code>, <code>PHALNX_TRACY_FREE</code>, <code>LogToTracy</code>) are compiled out in shipping builds, but development and test builds are expected to run with them enabled. Memory without graphs is just vibes.
           </p>
 
           <h3>Where it goes next</h3>
           <p>
-            Up to this point, the memory system gives PHALANX a few important properties:
+            At this point the memory system gives PHALANX a few important properties, all of which are concretely backed by the headers in this project:
           </p>
           <ul>
-            <li>A written-down budget and a way to see when reality deviates from it.</li>
-            <li>Clear separation between frame, pool, and heap-style allocations.</li>
+            <li>A written-down budget (<code>BudgetConfig</code>) and a way to see when reality deviates (<code>BudgetTracker</code> + Tracy).</li>
+            <li>Clear separation between frame, pool, and heap-style allocations (<code>FrameAllocator</code>, <code>PoolAllocator</code>, <code>FreeListAllocator</code>).</li>
             <li>Allocators that are fast because they are allowed to be strict about how they are used.</li>
-            <li>Instrumentation that makes misbehavior visible instead of surprising.</li>
+            <li>Instrumentation (<code>tracy_memory.h</code>) that makes misbehavior visible instead of surprising.</li>
           </ul>
           <p>
-            From here, the roadmap looks familiar if you read the ECS post:
+            From here, the roadmap lines up with the existing code:
           </p>
           <ul>
-            <li>Tie specific ECS archetypes and systems to explicit pools, so "too many projectiles" is visible as "ProjectilePool at 95% capacity."</li>
-            <li>Integrate asset streaming with the free-list allocator and the budget tracker, so content can see which bundles actually cost how much memory.</li>
-            <li>Build in-engine tooling that overlays memory graphs next to ECS iteration time and system timings, so cross-cutting regressions do not require multiple tools to diagnose.</li>
+            <li>Tie specific ECS archetypes and systems to explicit pools and size classes (via <code>FlecsAllocatorBridge</code>, <code>SmallBlockPoolAllocator</code>, <code>SizeClassPoolAllocator</code>), so “too many projectiles” shows up as “ProjectilePool at 95% capacity”.</li>
+            <li>Integrate asset streaming with <code>FreeListAllocator</code> and <code>BudgetTracker</code>, so content can see which bundles actually cost how much memory against the 2&nbsp;GB budget.</li>
+            <li>Build in-engine tooling that overlays memory graphs next to ECS iteration time and system timings, so cross-cutting regressions don’t require multiple tools to diagnose.</li>
           </ul>
           <p>
-            The intent is not to invent a novel allocator. It is to make memory as boring and as observable as
-            possible, so time can be spent on the parts of PHALANX that are supposed to be interesting: mechs,
-            maps, projectiles, and the fact that there are tens of thousands of entities moving every frame
-            without the allocator becoming the bottleneck.
+            The intent isn’t to invent a novel allocator. It’s to make memory as boring and as observable as possible, so time can be spent on the parts of PHALANX that are supposed to be interesting: mechs, maps, projectiles, and the fact that there are tens of thousands of entities moving every frame <strong>without</strong> the allocator becoming the bottleneck.
           </p>
         </div>
       </article>
@@ -472,3 +795,4 @@ projectile_pool.Destroy(p);</pre>
 </footer>
 </body>
 </html>
+```
